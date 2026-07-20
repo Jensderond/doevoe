@@ -68,6 +68,18 @@ func TestLoginFlow(t *testing.T) {
 	}
 }
 
+func TestLoginBadPasswordContentType(t *testing.T) {
+	_, srv, c := adminFixture(t)
+
+	resp := login(t, srv, c, "wrong")
+	if resp.StatusCode != 401 {
+		t.Fatalf("bad password should return 401, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Fatalf("401 response must have correct Content-Type, got %q", ct)
+	}
+}
+
 func TestLayoutIsMobileFirst(t *testing.T) {
 	_, srv, c := adminFixture(t)
 	login(t, srv, c, "hunter2")

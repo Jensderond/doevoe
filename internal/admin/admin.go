@@ -51,18 +51,10 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 
 func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 	if subtle.ConstantTimeCompare([]byte(r.FormValue("password")), []byte(a.Password)) != 1 {
-		w.WriteHeader(http.StatusUnauthorized)
-		a.render(w, "login", map[string]any{"Error": "Wrong password"})
+		a.renderStatus(w, http.StatusUnauthorized, "login", map[string]any{"Error": "Wrong password"})
 		return
 	}
-	buf := make([]byte, 16)
-	rand.Read(buf)
-	token := hex.EncodeToString(buf)
-	a.mu.Lock()
-	a.sessions[token] = time.Now().Add(7 * 24 * time.Hour)
-	a.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: "doevoe_session", Value: token,
-		Path: "/admin", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 7 * 24 * 3600})
+	a.newSession(w)
 	http.Redirect(w, r, "/admin/emails", http.StatusSeeOther)
 }
 
@@ -101,16 +93,32 @@ func (a *Admin) auth(h http.HandlerFunc) http.Handler {
 	})
 }
 
-func (a *Admin) render(w http.ResponseWriter, page string, data any) {
+func (a *Admin) renderStatus(w http.ResponseWriter, status int, page string, data any) {
 	tpl, err := template.ParseFS(assets, "templates/layout.html", "templates/"+page+".html")
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	if err := tpl.ExecuteTemplate(w, "layout", data); err != nil {
 		http.Error(w, err.Error(), 500)
 	}
+}
+
+func (a *Admin) render(w http.ResponseWriter, page string, data any) {
+	a.renderStatus(w, http.StatusOK, page, data)
+}
+
+func (a *Admin) newSession(w http.ResponseWriter) {
+	buf := make([]byte, 16)
+	rand.Read(buf)
+	token := hex.EncodeToString(buf)
+	a.mu.Lock()
+	a.sessions[token] = time.Now().Add(7 * 24 * time.Hour)
+	a.mu.Unlock()
+	http.SetCookie(w, &http.Cookie{Name: "doevoe_session", Value: token,
+		Path: "/admin", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 7 * 24 * 3600})
 }
 
 func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {
