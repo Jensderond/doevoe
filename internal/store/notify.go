@@ -1,5 +1,10 @@
 package store
 
+import (
+	"database/sql"
+	"errors"
+)
+
 type DomainStats struct {
 	DomainName   string
 	Sent, Failed int
@@ -8,10 +13,10 @@ type DomainStats struct {
 func (s *Store) GetState(key string) (string, error) {
 	var v string
 	err := s.db.QueryRow(`SELECT value FROM notify_state WHERE key=?`, key).Scan(&v)
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil // unset
 	}
-	return v, nil
+	return v, err
 }
 
 func (s *Store) SetState(key, value string) error {
