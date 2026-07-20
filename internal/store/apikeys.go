@@ -1,7 +1,10 @@
 package store
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 )
 
@@ -58,4 +61,18 @@ func (s *Store) RevokeAPIKey(id int64) error {
 func (s *Store) TouchAPIKey(id int64, at string) error {
 	_, err := s.db.Exec(`UPDATE api_keys SET last_used_at=? WHERE id=?`, at, id)
 	return err
+}
+
+func GenerateAPIKey() (token, hash string, err error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", "", err
+	}
+	token = "dv_" + hex.EncodeToString(buf)
+	return token, HashAPIKey(token), nil
+}
+
+func HashAPIKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
