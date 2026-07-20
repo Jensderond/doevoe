@@ -54,6 +54,31 @@ func validateHeaderName(name string) error {
 	return nil
 }
 
+// ValidateHeaderValue reports whether v contains a raw CR or LF, which would
+// allow header injection if interpolated into a message unescaped. Exported
+// so ingress-layer validation (internal/api) can reject such values
+// immediately (422) instead of queuing an email that BuildMessage would
+// later refuse to send.
+func ValidateHeaderValue(name, v string) error {
+	return validateHeaderValue(name, v)
+}
+
+// ValidateHeader validates a custom header's name and value exactly the way
+// BuildMessage does: reject CR/LF in the name, reject names reserved for
+// headers BuildMessage sets itself (see reservedHeaders), and reject CR/LF
+// in the value. Exported so ingress-layer validation (internal/api) can
+// reuse the single reserved-header list and reject bad custom headers
+// immediately (422) instead of queuing an email that can never send.
+func ValidateHeader(name, value string) error {
+	if err := validateHeaderName(name); err != nil {
+		return err
+	}
+	if reservedHeaders[strings.ToLower(name)] {
+		return fmt.Errorf("header %q is reserved", name)
+	}
+	return validateHeaderValue(name, value)
+}
+
 func BuildMessage(e *store.Email, hostname string, now time.Time) (string, error) {
 	// Validate before building anything: check raw values (pre-encoding for
 	// Subject) so an embedded CRLF can't sneak in via mime-encoding quirks,

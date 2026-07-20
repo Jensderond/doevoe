@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -57,6 +59,17 @@ func (f *fixture) post(t *testing.T, body, token, idemKey string) *http.Response
 	return resp
 }
 
+func (f *fixture) get(t *testing.T, id int64, token string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/emails/%d", f.srv.URL, id), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
 const validBody = `{"from":"info@example.com","to":"u@dest.test","subject":"Hi","text":"yo"}`
 
 func TestPostEmailQueues(t *testing.T) {
@@ -99,8 +112,13 @@ func TestPostRejections(t *testing.T) {
 
 func TestPostUnverifiedDomainFailsClosed(t *testing.T) {
 	f := setup(t, false)
-	if resp := f.post(t, validBody, f.token, ""); resp.StatusCode != 403 {
+	resp := f.post(t, validBody, f.token, "")
+	if resp.StatusCode != 403 {
 		t.Fatalf("want 403, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "DNS") {
+		t.Fatalf("want body to mention DNS, got %s", body)
 	}
 }
 
@@ -138,5 +156,178 @@ func TestGetEmailStatus(t *testing.T) {
 	json.NewDecoder(got.Body).Decode(&out)
 	if out.Status != "queued" {
 		t.Fatalf("%+v", out)
+	}
+}
+
+// TestCrossDomainGetIsolation covers Finding 1: two verified domains, each
+// with its own API key. An email created under domain A's key must not be
+// readable with domain B's key, even though both keys are valid and both
+// domains are verified - GetEmail must 404 rather than leak another
+// tenant's data.
+func TestCrossDomainGetIsolation(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	dA, _ := s.CreateDomain("a.example.com", "mail1", "PEM")
+	s.SetDomainVerification(dA.ID, true, true, true, store.Now())
+	dA, _ = s.GetDomain(dA.ID)
+	dB, _ := s.CreateDomain("b.example.com", "mail1", "PEM")
+	s.SetDomainVerification(dB.ID, true, true, true, store.Now())
+	dB, _ = s.GetDomain(dB.ID)
+
+	tokenA, hashA, err := store.GenerateAPIKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.CreateAPIKey("keyA", dA.ID, hashA)
+	tokenB, hashB, err := store.GenerateAPIKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.CreateAPIKey("keyB", dB.ID, hashB)
+
+	mux := http.NewServeMux()
+	(&Server{Store: s}).Routes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	f := &fixture{store: s, srv: srv}
+
+	body := `{"from":"info@a.example.com","to":"u@dest.test","subject":"Hi","text":"yo"}`
+	resp := f.post(t, body, tokenA, "")
+	if resp.StatusCode != 202 {
+		t.Fatalf("create status %d", resp.StatusCode)
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&created)
+	if created.ID == 0 {
+		t.Fatalf("no id created: %+v", created)
+	}
+
+	if got := f.get(t, created.ID, tokenB); got.StatusCode != 404 {
+		t.Fatalf("cross-domain GET with key B: want 404, got %d", got.StatusCode)
+	}
+	if got := f.get(t, created.ID, tokenA); got.StatusCode != 200 {
+		t.Fatalf("same-domain GET with key A: want 200, got %d", got.StatusCode)
+	}
+}
+
+// TestIdempotencyIndexRejectsDuplicate covers the storage-layer half of
+// Finding 2: it proves the partial unique index (api_key_id,
+// idempotency_key) actually fires on a second insert with the same pair.
+// This is what makes the handler's check-then-insert racy in the first
+// place - two concurrent requests can both pass FindByIdempotencyKey (miss)
+// and then race to EnqueueEmail, and only one of those inserts can win.
+func TestIdempotencyIndexRejectsDuplicate(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	kid, _ := s.CreateAPIKey("k", d.ID, "h")
+
+	e := &store.Email{APIKeyID: kid, DomainID: d.ID, From: "a@example.com", To: "b@dest.test",
+		Subject: "s", BodyText: "t", IdempotencyKey: "race-key"}
+	if _, err := s.EnqueueEmail(e); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	if _, err := s.EnqueueEmail(e); err == nil {
+		t.Fatal("want error inserting a second row with the same (api_key_id, idempotency_key)")
+	}
+}
+
+// TestEnqueueOrReplayRecoversFromIndexRace covers the handler-recovery half
+// of Finding 2. Deterministically driving the actual concurrent race
+// through the HTTP handler isn't reproducible without flakiness (the whole
+// point is that both requests pass the pre-check before either inserts), so
+// this instead unit-tests the extracted enqueueOrReplay helper directly:
+// it pre-creates a row with idempotency key K (standing in for the
+// racing request that won), then calls enqueueOrReplay with a second,
+// distinct Email that reuses the same (api_key_id, idempotency_key) pair
+// (standing in for the request that lost the race and whose EnqueueEmail
+// call fails against idx_emails_idem). The helper must recover by finding
+// the winning row and returning it as a replay, not surface the raw insert
+// error as a 500.
+func TestEnqueueOrReplayRecoversFromIndexRace(t *testing.T) {
+	f := setup(t, true)
+	k, err := f.store.GetAPIKeyByHash(store.HashAPIKey(f.token))
+	if err != nil || k == nil {
+		t.Fatalf("lookup api key: %v", err)
+	}
+
+	winner := &store.Email{APIKeyID: k.ID, DomainID: f.domain.ID, From: "info@example.com", To: "u@dest.test",
+		Subject: "s", BodyText: "t", IdempotencyKey: "race-key"}
+	winnerID, err := f.store.EnqueueEmail(winner)
+	if err != nil {
+		t.Fatalf("seed winning insert: %v", err)
+	}
+
+	loser := &store.Email{APIKeyID: k.ID, DomainID: f.domain.ID, From: "info@example.com", To: "other@dest.test",
+		Subject: "s2", BodyText: "t2", IdempotencyKey: "race-key"}
+	id, status, replay, err := enqueueOrReplay(f.store, loser)
+	if err != nil {
+		t.Fatalf("enqueueOrReplay: %v", err)
+	}
+	if !replay {
+		t.Fatal("want replay=true when the insert loses the index race")
+	}
+	if id != winnerID {
+		t.Fatalf("id = %d, want winning row's id %d", id, winnerID)
+	}
+	if status != "queued" {
+		t.Fatalf("status = %q, want queued", status)
+	}
+}
+
+// TestPostIngressValidation covers Finding 3: reply_to and custom headers
+// must be validated at ingress (422) rather than only at send time, where a
+// rejected email would already be stuck in the queue unable to ever send.
+func TestPostIngressValidation(t *testing.T) {
+	f := setup(t, true)
+
+	type body struct {
+		From, To, Subject, Text, ReplyTo string
+		Headers                          map[string]string `json:",omitempty"`
+	}
+	marshal := func(b body) string {
+		out, err := json.Marshal(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+
+	cases := []struct {
+		name string
+		b    body
+	}{
+		{
+			name: "CRLF in subject",
+			b:    body{From: "info@example.com", To: "u@dest.test", Subject: "Hi\r\nBcc: evil@example.com", Text: "yo"},
+		},
+		{
+			name: "CRLF in custom header value",
+			b: body{From: "info@example.com", To: "u@dest.test", Subject: "Hi", Text: "yo",
+				Headers: map[string]string{"X-Custom": "val\r\nBcc: evil@example.com"}},
+		},
+		{
+			name: "reserved custom header name",
+			b: body{From: "info@example.com", To: "u@dest.test", Subject: "Hi", Text: "yo",
+				Headers: map[string]string{"Bcc": "evil@example.com"}},
+		},
+		{
+			name: "unparseable reply_to",
+			b:    body{From: "info@example.com", To: "u@dest.test", Subject: "Hi", Text: "yo", ReplyTo: "not an address"},
+		},
+	}
+	for _, c := range cases {
+		if resp := f.post(t, marshal(c.b), f.token, ""); resp.StatusCode != 422 {
+			t.Errorf("%s: got %d want 422", c.name, resp.StatusCode)
+		}
 	}
 }

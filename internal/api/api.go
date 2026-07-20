@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"doevoe/internal/delivery"
 	"doevoe/internal/store"
 )
 
@@ -61,6 +62,25 @@ func (s *Server) postEmail(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 422, "subject and html or text are required")
 		return
 	}
+	// Validate ingress input that the delivery layer would otherwise only catch
+	// at send time (see delivery.BuildMessage), which would leave a queued email
+	// that can never send. Reject it immediately instead.
+	if err := delivery.ValidateHeaderValue("Subject", req.Subject); err != nil {
+		jsonError(w, 422, "invalid subject: "+err.Error())
+		return
+	}
+	if req.ReplyTo != "" {
+		if _, err := mail.ParseAddress(req.ReplyTo); err != nil {
+			jsonError(w, 422, "invalid reply_to address")
+			return
+		}
+	}
+	for name, value := range req.Headers {
+		if err := delivery.ValidateHeader(name, value); err != nil {
+			jsonError(w, 422, "invalid header: "+err.Error())
+			return
+		}
+	}
 	domain, err := s.Store.GetDomain(k.DomainID)
 	if err != nil {
 		jsonError(w, 500, "internal error")
@@ -89,7 +109,7 @@ func (s *Server) postEmail(w http.ResponseWriter, r *http.Request) {
 		hb, _ := json.Marshal(req.Headers)
 		headersJSON = string(hb)
 	}
-	id, err := s.Store.EnqueueEmail(&store.Email{
+	id, status, replay, err := enqueueOrReplay(s.Store, &store.Email{
 		APIKeyID: k.ID, DomainID: domain.ID,
 		From: from.Address, To: to.Address, ReplyTo: req.ReplyTo,
 		Subject: req.Subject, BodyHTML: req.HTML, BodyText: req.Text,
@@ -99,7 +119,35 @@ func (s *Server) postEmail(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 500, "enqueue failed")
 		return
 	}
-	writeJSON(w, 202, map[string]any{"id": id, "status": "queued"})
+	if replay {
+		writeJSON(w, 200, map[string]any{"id": id, "status": status})
+		return
+	}
+	writeJSON(w, 202, map[string]any{"id": id, "status": status})
+}
+
+// enqueueOrReplay inserts e via store.EnqueueEmail. A caller-supplied
+// Idempotency-Key is already checked once by postEmail before this is
+// called (FindByIdempotencyKey), but that check-then-insert is not atomic:
+// a racing duplicate request can insert the same (api_key_id,
+// idempotency_key) pair in between, and the partial unique index
+// idx_emails_idem then causes this insert to fail. Rather than surface that
+// as a bare 500 for what is really a successful, idempotent replay, this
+// re-checks FindByIdempotencyKey on insert failure and, if a matching row
+// now exists, returns it as a replay (200) instead of an error. If no
+// matching row is found, or no idempotency key was supplied, the original
+// insert error is returned unchanged.
+func enqueueOrReplay(st *store.Store, e *store.Email) (id int64, status string, replay bool, err error) {
+	id, err = st.EnqueueEmail(e)
+	if err == nil {
+		return id, "queued", false, nil
+	}
+	if e.IdempotencyKey != "" {
+		if existing, ferr := st.FindByIdempotencyKey(e.APIKeyID, e.IdempotencyKey); ferr == nil && existing != nil {
+			return existing.ID, existing.Status, true, nil
+		}
+	}
+	return 0, "", false, err
 }
 
 func (s *Server) getEmail(w http.ResponseWriter, r *http.Request) {
