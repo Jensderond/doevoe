@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
 	Hostname, Listen, DataDir      string
 	AdminPassword, AdminEmail      string
 	SystemFrom, EgressIP           string
+	PublicURL                      string
 	SMTPPort, FailureRateMinVolume int
 	FailureRateThreshold           float64
 }
@@ -23,6 +25,7 @@ func Load() (*Config, error) {
 		AdminEmail:    os.Getenv("DOEVOE_ADMIN_EMAIL"),
 		SystemFrom:    os.Getenv("DOEVOE_SYSTEM_FROM"),
 		EgressIP:      os.Getenv("DOEVOE_EGRESS_IP"),
+		PublicURL:     strings.TrimRight(os.Getenv("DOEVOE_PUBLIC_URL"), "/"),
 	}
 	for name, v := range map[string]string{
 		"DOEVOE_HOSTNAME": c.Hostname, "DOEVOE_ADMIN_PASSWORD": c.AdminPassword,

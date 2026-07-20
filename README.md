@@ -106,6 +106,7 @@ exits immediately with an error.
 | `DOEVOE_ADMIN_PASSWORD` | yes | — | Password for the single `/admin` account |
 | `DOEVOE_ADMIN_EMAIL` | yes | — | Recipient for failure digests, rate alerts, monthly stats, key lifecycle notices, and the DMARC `rua` address |
 | `DOEVOE_SYSTEM_FROM` | yes | — | From-address doevoe uses for its own notifications; its domain must be one of the domains verified in doevoe |
+| `DOEVOE_PUBLIC_URL` | no | `http://$DOEVOE_HOSTNAME` | Public base URL (e.g. `https://mail.example.com`, no trailing slash) used to build the deep links in doevoe's own notification emails; set this to your reverse proxy's HTTPS address, since the default is plain HTTP and won't match it |
 | `DOEVOE_LISTEN` | no | `:8080` | HTTP listen address for the API + admin UI |
 | `DOEVOE_DATA_DIR` | no | `/data` | Directory for the SQLite database (`doevoe.db`) |
 | `DOEVOE_SMTP_PORT` | no | `25` | Outbound SMTP port used to connect to recipient MX servers |

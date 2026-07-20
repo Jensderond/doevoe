@@ -31,3 +31,21 @@ func TestLoadMissingRequired(t *testing.T) {
 		t.Fatal("want error for missing DOEVOE_HOSTNAME")
 	}
 }
+
+func TestLoadPublicURL(t *testing.T) {
+	setRequired(t)
+	if c, err := Load(); err != nil {
+		t.Fatal(err)
+	} else if c.PublicURL != "" {
+		t.Errorf("want empty PublicURL by default, got %q", c.PublicURL)
+	}
+
+	t.Setenv("DOEVOE_PUBLIC_URL", "https://mail.example.com/")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.PublicURL != "https://mail.example.com" {
+		t.Errorf("want trailing slash stripped, got %q", c.PublicURL)
+	}
+}

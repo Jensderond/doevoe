@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -36,11 +37,14 @@ func main() {
 		slog.Error("store", "err", err)
 		os.Exit(1)
 	}
-	defer s.Close()
 
+	baseURL := cfg.PublicURL
+	if baseURL == "" {
+		baseURL = "http://" + cfg.Hostname
+	}
 	notifier := &notify.Notifier{
 		Store: s, AdminEmail: cfg.AdminEmail, SystemFrom: cfg.SystemFrom,
-		BaseURL: "http://" + cfg.Hostname, Threshold: cfg.FailureRateThreshold, MinVolume: cfg.FailureRateMinVolume,
+		BaseURL: baseURL, Threshold: cfg.FailureRateThreshold, MinVolume: cfg.FailureRateMinVolume,
 	}
 	sender := delivery.NewSender(cfg.Hostname, cfg.SMTPPort)
 	worker := &delivery.Worker{Store: s, Send: sender.Send, OnPermanentFailure: notifier.PermanentFailure}
@@ -65,11 +69,23 @@ func main() {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
-	go worker.Run(ctx)
-	go notifier.Run(ctx)
-	go recheckDNSLoop(ctx, s, checkDomain) // hourly re-verification per spec
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		worker.Run(ctx)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		notifier.Run(ctx)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		recheckDNSLoop(ctx, s, checkDomain) // hourly re-verification per spec
+	}()
 
 	srv := &http.Server{Addr: cfg.Listen, Handler: mux}
 	go func() {
@@ -81,8 +97,18 @@ func main() {
 	slog.Info("doevoe listening", "addr", cfg.Listen, "hostname", cfg.Hostname)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("http", "err", err)
+		stop()
+		wg.Wait()
+		s.Close()
 		os.Exit(1)
 	}
+
+	// Server has stopped serving; make sure the background loops see
+	// cancellation (already cancelled on the signal path) before we wait
+	// for them and close the store, so nothing races store.Close.
+	stop()
+	wg.Wait()
+	s.Close()
 }
 
 // recheckDNSLoop periodically re-verifies each domain's SPF/DKIM/DMARC
