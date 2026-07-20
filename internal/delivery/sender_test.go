@@ -2,11 +2,19 @@ package delivery
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"doevoe/internal/dkimkeys"
 	"doevoe/internal/store"
@@ -51,6 +59,54 @@ func startTestSMTP(t *testing.T, b *testBackend) (host string, port int) {
 	_, p, _ := net.SplitHostPort(l.Addr().String())
 	port, _ = strconv.Atoi(p)
 	return "127.0.0.1", port
+}
+
+// startTestSMTPTLS is like startTestSMTP but enables STARTTLS advertisement
+// on the server using the given certificate.
+func startTestSMTPTLS(t *testing.T, b *testBackend, cert tls.Certificate) (host string, port int) {
+	t.Helper()
+	srv := smtp.NewServer(b)
+	srv.Domain = "test.local"
+	srv.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(l)
+	t.Cleanup(func() { srv.Close() })
+	_, p, _ := net.SplitHostPort(l.Addr().String())
+	port, _ = strconv.Atoi(p)
+	return "127.0.0.1", port
+}
+
+// generateSelfSignedCert returns a self-signed cert/key pair valid for
+// 127.0.0.1, for use as an in-process test SMTP server's STARTTLS cert.
+func generateSelfSignedCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cert
 }
 
 func testSender(port int) *Sender {
@@ -99,6 +155,54 @@ func TestSendPermanentRejection(t *testing.T) {
 	res := testSender(port).Send(context.Background(), e, d)
 	if res.Err == nil || Classify(res.Err) != ClassPerm || res.Code != 550 {
 		t.Fatalf("want 550 perm, got %+v", res)
+	}
+}
+
+func TestSendSTARTTLSSuccess(t *testing.T) {
+	cert := generateSelfSignedCert(t)
+	b := &testBackend{}
+	_, port := startTestSMTPTLS(t, b, cert)
+	e, d := testEmailAndDomain(t, "ok@dest.test")
+
+	sender := testSender(port)
+	sender.TLSConfig = func(host string) *tls.Config {
+		return &tls.Config{ServerName: host, InsecureSkipVerify: true}
+	}
+
+	res := sender.Send(context.Background(), e, d)
+	if res.Err != nil {
+		t.Fatalf("send: %+v", res)
+	}
+	if !res.TLS {
+		t.Error("want Result.TLS = true for successful STARTTLS")
+	}
+	if len(b.messages) != 1 || !strings.Contains(b.messages[0], "DKIM-Signature:") {
+		t.Fatalf("server got: %v", b.messages)
+	}
+}
+
+func TestSendSTARTTLSHandshakeFailureFallsBackToPlaintext(t *testing.T) {
+	cert := generateSelfSignedCert(t)
+	b := &testBackend{}
+	_, port := startTestSMTPTLS(t, b, cert)
+	e, d := testEmailAndDomain(t, "ok@dest.test")
+
+	sender := testSender(port)
+	// No InsecureSkipVerify and no trusted CA for this self-signed cert, so
+	// the handshake forced by connect's post-STARTTLS Hello must fail.
+	sender.TLSConfig = func(host string) *tls.Config {
+		return &tls.Config{ServerName: host}
+	}
+
+	res := sender.Send(context.Background(), e, d)
+	if res.Err != nil {
+		t.Fatalf("want opportunistic plaintext fallback to succeed, got: %+v", res)
+	}
+	if res.TLS {
+		t.Error("want Result.TLS = false after handshake-failure downgrade")
+	}
+	if len(b.messages) != 1 || !strings.Contains(b.messages[0], "DKIM-Signature:") {
+		t.Fatalf("server got: %v", b.messages)
 	}
 }
 

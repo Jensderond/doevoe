@@ -21,6 +21,11 @@ type Result struct {
 	Response string
 	Duration time.Duration
 	Err      error
+	// TLS reports whether the message was delivered over an
+	// (opportunistically) STARTTLS-encrypted connection. False both when the
+	// server never advertised STARTTLS and when it did but the handshake
+	// failed and delivery fell back to plaintext.
+	TLS bool
 }
 
 type Sender struct {
@@ -78,9 +83,9 @@ func (s *Sender) Send(ctx context.Context, e *store.Email, d *store.Domain) Resu
 	for _, mx := range mxs {
 		host := strings.TrimSuffix(mx.Host, ".")
 		lastHost = host
-		err := s.deliverTo(ctx, host, e.From, e.To, signed)
+		usedTLS, err := s.deliverTo(ctx, host, e.From, e.To, signed)
 		if err == nil {
-			return Result{MXHost: host, Code: 250, Response: "accepted", Duration: time.Since(start)}
+			return Result{MXHost: host, Code: 250, Response: "accepted", Duration: time.Since(start), TLS: usedTLS}
 		}
 		lastErr = err
 		if Classify(err) == ClassPerm {
@@ -90,37 +95,37 @@ func (s *Sender) Send(ctx context.Context, e *store.Email, d *store.Domain) Resu
 	return fail(lastHost, lastErr)
 }
 
-func (s *Sender) deliverTo(ctx context.Context, host, from, to, msg string) error {
-	c, err := s.connect(ctx, host)
+func (s *Sender) deliverTo(ctx context.Context, host, from, to, msg string) (bool, error) {
+	c, usedTLS, err := s.connect(ctx, host)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer c.Close()
 
 	if err := c.Mail(from, nil); err != nil {
-		return err
+		return usedTLS, err
 	}
 	if err := c.Rcpt(to, nil); err != nil {
-		return err
+		return usedTLS, err
 	}
 	w, err := c.Data()
 	if err != nil {
-		return err
+		return usedTLS, err
 	}
 	if _, err := w.Write([]byte(msg)); err != nil {
-		return err
+		return usedTLS, err
 	}
 	if err := w.Close(); err != nil {
-		return err
+		return usedTLS, err
 	}
-	return c.Quit()
+	return usedTLS, c.Quit()
 }
 
 // connect dials host and returns a Client that has already done EHLO with our
-// hostname. If the server advertises STARTTLS and TLSConfig is configured, it
-// upgrades to TLS first (opportunistic TLS) and re-does EHLO under the
-// encrypted channel, per RFC 3207: prior (pre-TLS) EHLO results must be
-// discarded.
+// hostname, plus whether the connection ended up TLS-encrypted. If the server
+// advertises STARTTLS and TLSConfig is configured, it upgrades to TLS first
+// (opportunistic TLS) and re-does EHLO under the encrypted channel, per RFC
+// 3207: prior (pre-TLS) EHLO results must be discarded.
 //
 // Deviation from the brief: the installed github.com/emersion/go-smtp@v0.24.0
 // has no exported Client.StartTLS method usable on an already-Hello'd client
@@ -131,41 +136,73 @@ func (s *Sender) deliverTo(ctx context.Context, host, from, to, msg string) erro
 // MAIL/RCPT/DATA), we let NewClientStartTLS do its throwaway pre-TLS EHLO,
 // then call the exported c.Hello(s.Hostname) again afterward — startTLS resets
 // the client's internal "did hello" state, so this is allowed and triggers a
-// fresh EHLO under TLS with our real hostname. If STARTTLS isn't supported (or
-// the upgrade fails), NewClientStartTLS has already closed that connection, so
-// we redial once and continue in plaintext.
-func (s *Sender) connect(ctx context.Context, host string) (*smtp.Client, error) {
+// fresh EHLO under TLS with our real hostname.
+//
+// go-smtp's startTLS only wraps the conn with tls.Client(...); it never calls
+// Handshake() itself, so a bad cert (self-signed/expired/hostname-mismatch —
+// common on real-world MXs) would otherwise surface only later, lazily, on
+// whatever I/O happens to trigger it first. The mandatory post-STARTTLS
+// c.Hello() call above is exactly that first I/O, so it deterministically
+// forces (and surfaces) the handshake here. If that Hello fails with anything
+// other than an *smtp.SMTPError, we treat it as a STARTTLS/handshake failure
+// and opportunistically redial in plaintext (Postfix "may"-policy style)
+// rather than returning a Temp error that would retry identically forever. An
+// *smtp.SMTPError there (or from the pre-TLS EHLO inside NewClientStartTLS,
+// e.g. a 550 policy rejection) is a real SMTP-level rejection, not a
+// TLS/transport problem, so it is surfaced for classification instead of
+// triggering a downgrade.
+func (s *Sender) connect(ctx context.Context, host string) (*smtp.Client, bool, error) {
 	dial := func() (net.Conn, error) {
 		d := &net.Dialer{Timeout: 30 * time.Second}
 		return d.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, s.Port))
 	}
 
-	if s.TLSConfig != nil {
+	plaintext := func() (*smtp.Client, error) {
 		conn, err := dial()
 		if err != nil {
 			return nil, err
 		}
-		if c, err := smtp.NewClientStartTLS(conn, s.TLSConfig(host)); err == nil {
-			if err := c.Hello(s.Hostname); err != nil {
-				c.Close()
-				return nil, err
-			}
-			return c, nil
+		c := smtp.NewClient(conn)
+		if err := c.Hello(s.Hostname); err != nil {
+			c.Close()
+			return nil, err
 		}
-		// STARTTLS unsupported or failed; NewClientStartTLS already closed
-		// that connection. Fall back to a fresh, plaintext connection.
+		return c, nil
 	}
 
-	conn, err := dial()
-	if err != nil {
-		return nil, err
+	if s.TLSConfig != nil {
+		conn, err := dial()
+		if err != nil {
+			return nil, false, err
+		}
+		c, err := smtp.NewClientStartTLS(conn, s.TLSConfig(host))
+		if err != nil {
+			var se *smtp.SMTPError
+			if errors.As(err, &se) {
+				return nil, false, err // permanent policy rejection: don't downgrade
+			}
+			// STARTTLS unsupported, or dial/negotiation failure. That
+			// connection is already closed by NewClientStartTLS; redial
+			// plaintext.
+			c2, err2 := plaintext()
+			return c2, false, err2
+		}
+		if err := c.Hello(s.Hostname); err != nil {
+			c.Close()
+			var se *smtp.SMTPError
+			if errors.As(err, &se) {
+				return nil, false, err // real SMTP-level rejection post-TLS
+			}
+			// Handshake (or other transport) failure: opportunistic
+			// downgrade — redial and deliver in plaintext.
+			c2, err2 := plaintext()
+			return c2, false, err2
+		}
+		return c, true, nil
 	}
-	c := smtp.NewClient(conn)
-	if err := c.Hello(s.Hostname); err != nil {
-		c.Close()
-		return nil, err
-	}
-	return c, nil
+
+	c, err := plaintext()
+	return c, false, err
 }
 
 // asSMTPError reports whether err wraps an *smtp.SMTPError, setting target if so.

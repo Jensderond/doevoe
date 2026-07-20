@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,32 @@ func TestBuildMessageMultipart(t *testing.T) {
 	}
 	if strings.Contains(strings.ReplaceAll(msg, "\r\n", ""), "\n") {
 		t.Error("bare LF found; DKIM requires CRLF")
+	}
+}
+
+func TestBuildMessageRejectsHeaderInjectionInSubject(t *testing.T) {
+	e := &store.Email{From: "a@example.com", To: "b@dest.test",
+		Subject: "Hi\r\nBcc: evil@example.com", BodyText: "plain", HeadersJSON: "{}"}
+	if _, err := BuildMessage(e, "mail.example.com", testTime); err == nil {
+		t.Fatal("want error for CRLF injection in Subject, got nil")
+	}
+}
+
+func TestBuildMessageRejectsHeaderInjectionInCustomHeader(t *testing.T) {
+	e := &store.Email{From: "a@example.com", To: "b@dest.test", Subject: "Hi", BodyText: "plain",
+		HeadersJSON: `{"X-Campaign":"welcome\r\nBcc: evil@example.com"}`}
+	if _, err := BuildMessage(e, "mail.example.com", testTime); err == nil {
+		t.Fatal("want error for CRLF injection in custom header value, got nil")
+	}
+}
+
+func TestBuildMessageRejectsReservedCustomHeader(t *testing.T) {
+	for _, name := range []string{"Bcc", "bcc", "From", "DKIM-Signature", "Content-Type"} {
+		e := &store.Email{From: "a@example.com", To: "b@dest.test", Subject: "Hi", BodyText: "plain",
+			HeadersJSON: fmt.Sprintf(`{%q:"x"}`, name)}
+		if _, err := BuildMessage(e, "mail.example.com", testTime); err == nil {
+			t.Errorf("header %q: want error for reserved custom header, got nil", name)
+		}
 	}
 }
 
