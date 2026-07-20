@@ -159,15 +159,19 @@ func (a *Admin) showEmail(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) retryEmail(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	e, err := a.Store.GetEmail(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if e.Status != "failed" {
+		http.Error(w, "only failed emails can be retried", 409)
+		return
+	}
 	newTo := strings.TrimSpace(r.FormValue("to"))
 	if newTo != "" {
 		if _, err := mail.ParseAddress(newTo); err != nil {
 			http.Error(w, "invalid address", 422)
-			return
-		}
-		e, err := a.Store.GetEmail(id)
-		if err != nil {
-			http.NotFound(w, r)
 			return
 		}
 		if newTo == e.To {
