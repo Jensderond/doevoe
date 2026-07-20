@@ -124,10 +124,14 @@ func (n *Notifier) RateTick(now time.Time) error {
 		return err
 	}
 	since := store.FmtTime(now.Add(-time.Hour))
+	var firstErr error
 	for _, d := range domains {
 		failed, total, err := n.Store.FailureRate(d.ID, since)
 		if err != nil {
 			slog.Error("notifier: failure rate lookup failed", "domain", d.Name, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		stateKey := "rate_fired_" + d.Name
@@ -142,22 +146,32 @@ func (n *Notifier) RateTick(now time.Time) error {
 				fmt.Sprintf("%.0f%% of the last %d delivery attempts for %s failed in the past hour.\nThis can indicate a blocklist or reputation problem.\n\n%s/admin/emails?domain=%d&status=failed\n",
 					rate*100, total, d.Name, n.BaseURL, d.ID))
 			if err != nil {
-				return err
+				slog.Error("notifier: enqueue rate alert failed", "domain", d.Name, "err", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
 			}
 			if sent {
 				if err := n.Store.SetState(stateKey, "fired"); err != nil {
 					slog.Error("notifier: setting rate_fired state failed", "domain", d.Name, "err", err)
-					return err
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
 				}
 			}
 		case rate < n.Threshold && fired == "fired":
 			if err := n.Store.SetState(stateKey, ""); err != nil { // re-arm
 				slog.Error("notifier: re-arming rate_fired state failed", "domain", d.Name, "err", err)
-				return err
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
 			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 func (n *Notifier) StatsTick(now time.Time) error {

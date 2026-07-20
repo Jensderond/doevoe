@@ -119,6 +119,44 @@ func TestRateAlertFiresOncePerIncident(t *testing.T) {
 	}
 }
 
+func TestRateAlertContinuesAfterFiredDomain(t *testing.T) {
+	s, n, clientID := fixture(t, true)
+	now := time.Now().UTC()
+
+	// Create second domain to test per-domain isolation
+	domain2, _ := s.CreateDomain("client2.example", "mail1", "PEM")
+	s.SetDomainVerification(domain2.ID, true, true, true, store.Now())
+
+	// Both domains: 10 attempts, 5 failures (50% >= 20% threshold), >= 10 min volume
+	for i := 0; i < 10; i++ {
+		id1 := failEmail(t, s, clientID, "x@dest.test")
+		code := 250
+		if i < 5 {
+			code = 451
+		}
+		s.RecordAttempt(id1, 1, code, "mx", "resp", 10)
+
+		id2 := failEmail(t, s, domain2.ID, "x@dest.test")
+		s.RecordAttempt(id2, 1, code, "mx", "resp", 10)
+	}
+
+	// Pre-fire domain1 (client.example) so it skips alert in this tick
+	s.SetState("rate_fired_client.example", "fired")
+
+	// Run RateTick: domain1 should skip (already fired), domain2 should fire
+	if err := n.RateTick(now); err != nil {
+		t.Fatal(err)
+	}
+
+	got := systemEmails(t, s)
+	if len(got) != 1 {
+		t.Fatalf("want exactly 1 rate alert (domain2 only), got %d", len(got))
+	}
+	if !strings.Contains(got[0].Subject, "client2.example") {
+		t.Fatalf("want alert for client2.example, got subject: %q", got[0].Subject)
+	}
+}
+
 func TestMonthlyStats(t *testing.T) {
 	s, n, clientID := fixture(t, true)
 	jul := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
