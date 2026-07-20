@@ -7,11 +7,11 @@ import (
 )
 
 type Config struct {
-	Hostname, Listen, DataDir        string
-	AdminPassword, AdminEmail        string
-	SystemFrom, EgressIP             string
-	SMTPPort, FailureRateMinVolume   int
-	FailureRateThreshold             float64
+	Hostname, Listen, DataDir      string
+	AdminPassword, AdminEmail      string
+	SystemFrom, EgressIP           string
+	SMTPPort, FailureRateMinVolume int
+	FailureRateThreshold           float64
 }
 
 func Load() (*Config, error) {

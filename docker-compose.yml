@@ -1,0 +1,16 @@
+services:
+  doevoe:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - data:/data
+    environment:
+      DOEVOE_HOSTNAME: ${DOEVOE_HOSTNAME:?EHLO hostname, must match the PTR record}
+      DOEVOE_EGRESS_IP: ${DOEVOE_EGRESS_IP:?public IP this host sends from}
+      DOEVOE_ADMIN_PASSWORD: ${DOEVOE_ADMIN_PASSWORD:?}
+      DOEVOE_ADMIN_EMAIL: ${DOEVOE_ADMIN_EMAIL:?}
+      DOEVOE_SYSTEM_FROM: ${DOEVOE_SYSTEM_FROM:?}
+volumes:
+  data:

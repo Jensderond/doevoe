@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
+	"strings"
 )
 
 type Record struct{ Type, Host, Value, Note string }
@@ -38,6 +39,22 @@ func PublicKeyTXT(pub *rsa.PublicKey) (string, error) {
 		return "", err
 	}
 	return "v=DKIM1; k=rsa; p=" + base64.StdEncoding.EncodeToString(der), nil
+}
+
+// PublicB64FromPrivatePEM parses a PEM-encoded RSA private key (as stored on
+// a Domain) and returns the bare base64 public-key value suitable for a DKIM
+// TXT record's "p=" field (i.e. PublicKeyTXT's output with the
+// "v=DKIM1; k=rsa; p=" prefix stripped).
+func PublicB64FromPrivatePEM(pemStr string) (string, error) {
+	key, err := ParsePrivateKey(pemStr)
+	if err != nil {
+		return "", err
+	}
+	txt, err := PublicKeyTXT(&key.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(txt, "v=DKIM1; k=rsa; p="), nil
 }
 
 func Records(domain, selector, pubBase64, egressIP, adminEmail string) []Record {

@@ -224,13 +224,11 @@ func (a *Admin) showDomain(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	key, err := dkimkeys.ParsePrivateKey(d.DKIMPrivateKey)
+	pubB64, err := dkimkeys.PublicB64FromPrivatePEM(d.DKIMPrivateKey)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	pubTXT, _ := dkimkeys.PublicKeyTXT(&key.PublicKey)
-	pubB64 := strings.TrimPrefix(pubTXT, "v=DKIM1; k=rsa; p=")
 	records := dkimkeys.Records(d.Name, d.DKIMSelector, pubB64, a.EgressIP, a.AdminEmail)
 	a.render(w, "domain", map[string]any{"Domain": d, "Records": records})
 }

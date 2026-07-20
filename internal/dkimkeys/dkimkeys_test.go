@@ -34,6 +34,37 @@ func TestPublicKeyTXT(t *testing.T) {
 	}
 }
 
+func TestPublicB64FromPrivatePEM(t *testing.T) {
+	priv, _, err := Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ParsePrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txt, err := PublicKeyTXT(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.TrimPrefix(txt, "v=DKIM1; k=rsa; p=")
+
+	got, err := PublicB64FromPrivatePEM(priv)
+	if err != nil {
+		t.Fatalf("PublicB64FromPrivatePEM: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if strings.HasPrefix(got, "v=DKIM1") {
+		t.Fatalf("prefix not stripped: %q", got)
+	}
+
+	if _, err := PublicB64FromPrivatePEM("not a pem"); err == nil {
+		t.Fatal("expected error for invalid PEM")
+	}
+}
+
 func TestRecords(t *testing.T) {
 	recs := Records("example.com", "mail1", "PUBKEY", "203.0.113.7", "ops@example.com")
 	if len(recs) != 4 {
