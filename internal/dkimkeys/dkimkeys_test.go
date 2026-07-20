@@ -19,6 +19,21 @@ func TestGenerateAndParseRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPublicKeyTXT(t *testing.T) {
+	priv, _, err := Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ParsePrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txt, err := PublicKeyTXT(&key.PublicKey)
+	if err != nil || !strings.HasPrefix(txt, "v=DKIM1; k=rsa; p=") {
+		t.Fatalf("PublicKeyTXT: %v %q", err, txt)
+	}
+}
+
 func TestRecords(t *testing.T) {
 	recs := Records("example.com", "mail1", "PUBKEY", "203.0.113.7", "ops@example.com")
 	if len(recs) != 4 {

@@ -32,6 +32,14 @@ func ParsePrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 	return x509.ParsePKCS1PrivateKey(block.Bytes)
 }
 
+func PublicKeyTXT(pub *rsa.PublicKey) (string, error) {
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return "", err
+	}
+	return "v=DKIM1; k=rsa; p=" + base64.StdEncoding.EncodeToString(der), nil
+}
+
 func Records(domain, selector, pubBase64, egressIP, adminEmail string) []Record {
 	return []Record{
 		{Type: "TXT (SPF)", Host: "@", Value: fmt.Sprintf("v=spf1 ip4:%s -all", egressIP)},
