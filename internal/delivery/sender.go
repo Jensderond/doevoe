@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"sort"
 	"strings"
@@ -13,6 +14,24 @@ import (
 	"doevoe/internal/store"
 
 	"github.com/emersion/go-smtp"
+)
+
+// maxMXAttempts bounds how many MX hosts a single Send will walk
+// sequentially. Combined with commandTimeout/submissionTimeout below, this
+// keeps a single Send's worst-case duration well inside the worker's
+// stale-'sending' requeue cutoff (see the comment on that cutoff in
+// worker.go) even against MXs that accept connections but then tarpit.
+const maxMXAttempts = 3
+
+// commandTimeout and submissionTimeout override go-smtp's own defaults
+// (5m and 12m respectively as of v0.24.0) on every *smtp.Client this
+// package creates. Those defaults, times maxMXAttempts hosts walked
+// sequentially, could exceed the worker's stale-'sending' cutoff and cause
+// a duplicate delivery (see worker.go). These bounds keep the worst case
+// per Send well under that cutoff instead.
+const (
+	commandTimeout    = 2 * time.Minute
+	submissionTimeout = 5 * time.Minute
 )
 
 type Result struct {
@@ -77,6 +96,10 @@ func (s *Sender) Send(ctx context.Context, e *store.Email, d *store.Domain) Resu
 		mxs = []*net.MX{{Host: rcptDomain, Pref: 0}} // RFC 5321 fallback to A record
 	}
 	sort.Slice(mxs, func(i, j int) bool { return mxs[i].Pref < mxs[j].Pref })
+	if len(mxs) > maxMXAttempts {
+		slog.Debug("capping MX attempts", "domain", rcptDomain, "total", len(mxs), "attempted", maxMXAttempts)
+		mxs = mxs[:maxMXAttempts]
+	}
 
 	var lastErr error
 	var lastHost string
@@ -163,6 +186,8 @@ func (s *Sender) connect(ctx context.Context, host string) (*smtp.Client, bool, 
 			return nil, err
 		}
 		c := smtp.NewClient(conn)
+		c.CommandTimeout = commandTimeout
+		c.SubmissionTimeout = submissionTimeout
 		if err := c.Hello(s.Hostname); err != nil {
 			c.Close()
 			return nil, err
@@ -187,6 +212,8 @@ func (s *Sender) connect(ctx context.Context, host string) (*smtp.Client, bool, 
 			c2, err2 := plaintext()
 			return c2, false, err2
 		}
+		c.CommandTimeout = commandTimeout
+		c.SubmissionTimeout = submissionTimeout
 		if err := c.Hello(s.Hostname); err != nil {
 			c.Close()
 			var se *smtp.SMTPError

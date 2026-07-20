@@ -41,8 +41,22 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
+// staleSendingWindow bounds how long an email may sit in 'sending' before
+// RequeueStaleSending puts it back on the queue for another worker tick to
+// pick up. It must comfortably exceed the sender's worst-case time to give
+// up on a single Send: up to maxMXAttempts (3) MX hosts walked
+// sequentially, each bounded by commandTimeout (2m, for several SMTP
+// commands - EHLO/MAIL/RCPT/DATA-open) plus submissionTimeout (5m, for the
+// final post-DATA response) - roughly 3 * (2m*~3 + 5m) ~= 33m worst case.
+// 45m leaves headroom above that so a send that is merely slow (e.g. a
+// tarpitting MX) doesn't get requeued and re-sent by a second worker while
+// the first is still in flight, which would double-deliver the email. See
+// internal/delivery/sender.go for the timeout/attempt-cap constants this is
+// derived from.
+const staleSendingWindow = 45 * time.Minute
+
 func (w *Worker) Tick(ctx context.Context, now time.Time) error {
-	staleCutoff := store.FmtTime(now.Add(-15 * time.Minute))
+	staleCutoff := store.FmtTime(now.Add(-staleSendingWindow))
 	if n, err := w.Store.RequeueStaleSending(staleCutoff); err != nil {
 		slog.Error("requeue stale sending", "err", err)
 	} else if n > 0 {
