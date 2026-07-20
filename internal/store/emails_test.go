@@ -1,0 +1,83 @@
+package store
+
+import "testing"
+
+func enqueueTest(t *testing.T, s *Store, domainID int64, to string) int64 {
+	t.Helper()
+	id, err := s.EnqueueEmail(&Email{DomainID: domainID, From: "a@example.com", To: to, Subject: "hi", BodyText: "yo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestClaimDueIsExclusive(t *testing.T) {
+	s := testStore(t)
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id := enqueueTest(t, s, d.ID, "u@dest.test")
+
+	claimed, err := s.ClaimDue(10, Now())
+	if err != nil || len(claimed) != 1 || claimed[0].ID != id {
+		t.Fatalf("first claim: %v %v", claimed, err)
+	}
+	again, _ := s.ClaimDue(10, Now())
+	if len(again) != 0 {
+		t.Fatal("second claim must be empty (status=sending)")
+	}
+}
+
+func TestRetryAndFailLifecycle(t *testing.T) {
+	s := testStore(t)
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id := enqueueTest(t, s, d.ID, "u@dest.test")
+	s.ClaimDue(1, Now())
+
+	if err := s.MarkRetry(id, "2999-01-01T00:00:00Z", "451 try later"); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := s.GetEmail(id)
+	if e.Status != "queued" || e.Attempts != 1 || e.LastError != "451 try later" {
+		t.Fatalf("after retry: %+v", e)
+	}
+	if got, _ := s.ClaimDue(1, Now()); len(got) != 0 {
+		t.Fatal("future next_attempt_at must not be claimable")
+	}
+	s.db.Exec(`UPDATE emails SET status='sending' WHERE id=?`, id)
+	if err := s.MarkFailed(id, "550 no such user"); err != nil {
+		t.Fatal(err)
+	}
+	e, _ = s.GetEmail(id)
+	if e.Status != "failed" || e.Attempts != 2 {
+		t.Fatalf("after fail: %+v", e)
+	}
+}
+
+func TestRequeueWithRecipientEdit(t *testing.T) {
+	s := testStore(t)
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id := enqueueTest(t, s, d.ID, "u@gmial.com")
+	s.db.Exec(`UPDATE emails SET status='failed', attempts=3 WHERE id=?`, id)
+
+	if err := s.RequeueEmail(id, "u@gmail.com"); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := s.GetEmail(id)
+	if e.To != "u@gmail.com" || e.OriginalTo != "u@gmial.com" || e.Status != "queued" || e.Attempts != 0 {
+		t.Fatalf("after requeue: %+v", e)
+	}
+}
+
+func TestIdempotency(t *testing.T) {
+	s := testStore(t)
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	kid, _ := s.CreateAPIKey("k", d.ID, "h")
+	e := &Email{APIKeyID: kid, DomainID: d.ID, From: "a@example.com", To: "b@dest.test", Subject: "s", BodyText: "t", IdempotencyKey: "abc"}
+	id1, err := s.EnqueueEmail(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := s.FindByIdempotencyKey(kid, "abc")
+	if err != nil || found == nil || found.ID != id1 {
+		t.Fatalf("idempotency lookup: %+v %v", found, err)
+	}
+}
