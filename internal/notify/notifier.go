@@ -15,6 +15,8 @@ type Notifier struct {
 	AdminEmail, SystemFrom, BaseURL string
 	Threshold                       float64
 	MinVolume                       int
+	// failureRateFn overrides Store.FailureRate in tests; nil means use the store.
+	failureRateFn func(domainID int64, since string) (failed, total int, err error)
 }
 
 func (n *Notifier) Run(ctx context.Context) {
@@ -126,7 +128,13 @@ func (n *Notifier) RateTick(now time.Time) error {
 	since := store.FmtTime(now.Add(-time.Hour))
 	var firstErr error
 	for _, d := range domains {
-		failed, total, err := n.Store.FailureRate(d.ID, since)
+		var failed, total int
+		var err error
+		if n.failureRateFn != nil {
+			failed, total, err = n.failureRateFn(d.ID, since)
+		} else {
+			failed, total, err = n.Store.FailureRate(d.ID, since)
+		}
 		if err != nil {
 			slog.Error("notifier: failure rate lookup failed", "domain", d.Name, "err", err)
 			if firstErr == nil {

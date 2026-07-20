@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -154,6 +155,63 @@ func TestRateAlertContinuesAfterFiredDomain(t *testing.T) {
 	}
 	if !strings.Contains(got[0].Subject, "client2.example") {
 		t.Fatalf("want alert for client2.example, got subject: %q", got[0].Subject)
+	}
+}
+
+func TestRateAlertContinuesAfterErroringDomain(t *testing.T) {
+	s, n, d1ID := fixture(t, true)
+	now := time.Now().UTC()
+
+	// Create second domain to test per-domain error isolation
+	d2, _ := s.CreateDomain("client2.example", "mail1", "PEM")
+	d2ID := d2.ID
+	s.SetDomainVerification(d2ID, true, true, true, store.Now())
+
+	// Both domains: 10 attempts, 5 failures (50% >= 20% threshold), >= 10 min volume
+	for i := 0; i < 10; i++ {
+		id1 := failEmail(t, s, d1ID, "x@dest.test")
+		code := 250
+		if i < 5 {
+			code = 451
+		}
+		s.RecordAttempt(id1, 1, code, "mx", "resp", 10)
+
+		id2 := failEmail(t, s, d2ID, "x@dest.test")
+		s.RecordAttempt(id2, 1, code, "mx", "resp", 10)
+	}
+
+	// Inject error for d1, but delegate to store for d2
+	n.failureRateFn = func(domainID int64, since string) (failed, total int, err error) {
+		if domainID == d1ID {
+			return 0, 0, fmt.Errorf("injected d1 error")
+		}
+		return s.FailureRate(domainID, since)
+	}
+
+	// Run RateTick: d1 should error and continue, d2 should still fire
+	err := n.RateTick(now)
+	if err == nil {
+		t.Fatal("want RateTick to return firstErr from d1")
+	}
+	if !strings.Contains(err.Error(), "injected d1 error") {
+		t.Fatalf("want error containing 'injected d1 error', got: %v", err)
+	}
+
+	// Verify d2 still fired despite d1's error
+	got := systemEmails(t, s)
+	if len(got) != 1 {
+		t.Fatalf("want exactly 1 rate alert (d2 only), got %d", len(got))
+	}
+	if !strings.Contains(got[0].Subject, "client2.example") {
+		t.Fatalf("want alert for client2.example, got subject: %q", got[0].Subject)
+	}
+
+	// Verify state: d2 fired, d1 not set
+	if state, _ := s.GetState("rate_fired_client2.example"); state != "fired" {
+		t.Fatalf("want rate_fired_client2.example to be 'fired', got: %q", state)
+	}
+	if state, _ := s.GetState("rate_fired_client.example"); state != "" {
+		t.Fatalf("want rate_fired_client.example to be empty, got: %q", state)
 	}
 }
 
