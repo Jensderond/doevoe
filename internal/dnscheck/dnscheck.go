@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 type Resolver interface {
@@ -26,14 +27,22 @@ func Check(ctx context.Context, r Resolver, domain, selector, pubBase64, egressI
 	for _, txt := range lookup(ctx, r, domain) {
 		if strings.HasPrefix(txt, "v=spf1") {
 			out.SPF.Found = txt
-			out.SPF.OK = strings.Contains(txt, "ip4:"+egressIP)
+			if strings.Contains(txt, "ip4:"+egressIP) {
+				out.SPF.OK = true
+				break
+			}
 		}
 	}
 
 	out.DKIM.Expected = "p=" + pubBase64
 	dkimTxt := strings.Join(lookup(ctx, r, selector+"._domainkey."+domain), "")
 	out.DKIM.Found = dkimTxt
-	stripped := strings.NewReplacer(" ", "", "\t", "").Replace(dkimTxt)
+	stripped := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, dkimTxt)
 	out.DKIM.OK = strings.Contains(stripped, "p="+pubBase64)
 
 	out.DMARC.Expected = "v=DMARC1; …"
