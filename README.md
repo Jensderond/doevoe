@@ -93,6 +93,15 @@ export async function POST(req: Request) {
 returns the original queued/sent result instead of sending a duplicate
 email, which makes retries on the caller's side safe.
 
+Both `from` and `to` are parsed as a single RFC 5322 address
+(`mail.ParseAddress`) and only the bare address is stored and used — a
+display name in the `"Name <addr>"` form is accepted but currently
+**silently stripped**: doevoe sends (and shows in the admin UI) just
+`addr`, never `Name <addr>`. If you need the recipient/sender name to show
+up in the mail client's From/To header, put it together with the address
+yourself on the caller's side before the display-name support lands, or
+track that as a known v1 limitation (see below).
+
 ## Configuration
 
 All configuration is environment variables, read once at startup
@@ -176,3 +185,25 @@ docker compose up -d      # reads .env for the required DOEVOE_* variables
 The image is a static binary (`CGO_ENABLED=0`) on `distroless/static-debian12`
 — no shell, no package manager, minimal attack surface. Data persists in the
 `data` named volume mounted at `/data`.
+
+## v1 scope notes
+
+The following are deliberate cuts for this first version, not oversights —
+listed here so they're a documented decision rather than a surprise:
+
+- **No date-range filter in the admin emails list** — you can filter by
+  status, domain, and a free-text search over recipient/subject, but not by
+  a created/sent date range.
+- **Monthly stats have no previous-month comparison** — the monthly digest
+  reports the previous month's numbers in isolation, with no month-over-month
+  delta or trend.
+- **No pagination UI** — `ListEmails` supports `Limit`/`Offset`, but the
+  admin emails list only ever renders the first page (default limit 50);
+  there's no "next page" control yet.
+- **No CSRF tokens** — admin form-post routes rely solely on the session
+  cookie's `SameSite=Lax` attribute for CSRF protection, not an explicit
+  per-form token.
+- **The container runs as root** — the distroless image doesn't drop
+  privileges to a non-root user; it relies on the container boundary and the
+  lack of a shell/package manager in the image, not a `USER` directive, for
+  isolation.
