@@ -37,7 +37,7 @@ func TestVerifyDomainUpdatesFlags(t *testing.T) {
 	d, _ := s.GetDomainByName("client.example")
 
 	// adminFixture must set a.CheckDomain to this controllable fake:
-	setFakeCheck(dnscheck.Result{
+	setFakeCheck(t, dnscheck.Result{
 		SPF:   dnscheck.RecordResult{OK: true},
 		DKIM:  dnscheck.RecordResult{OK: true},
 		DMARC: dnscheck.RecordResult{OK: false, Found: ""},

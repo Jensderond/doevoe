@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"doevoe/internal/dnscheck"
 	"doevoe/internal/store"
@@ -17,8 +19,11 @@ import (
 
 var fakeCheckResult dnscheck.Result
 
-func setFakeCheck(result dnscheck.Result) {
+func setFakeCheck(t *testing.T, result dnscheck.Result) {
 	fakeCheckResult = result
+	t.Cleanup(func() {
+		fakeCheckResult = dnscheck.Result{}
+	})
 }
 
 func adminFixture(t *testing.T) (*store.Store, *httptest.Server, *http.Client) {
@@ -113,4 +118,57 @@ func readBody(t *testing.T, resp *http.Response) string {
 	}
 	resp.Body.Close()
 	return string(data)
+}
+
+func TestVerifyDomainNilCheckDomain(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+
+	// Create a domain first
+	d, err := s.CreateDomain("example.com", "mail1", "test-private-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a new request handler with CheckDomain set to nil
+	a := New(s, "hunter2", "203.0.113.7", "ops@example.com", "mail.example.com")
+	// a.CheckDomain is intentionally nil
+	mux := http.NewServeMux()
+	a.Routes(mux)
+	nilCheckSrv := httptest.NewServer(mux)
+	t.Cleanup(nilCheckSrv.Close)
+
+	// Manually create an authenticated request
+	jar := newTestJar(t)
+	u, _ := url.Parse(nilCheckSrv.URL)
+	jar.SetCookies(u, []*http.Cookie{
+		{Name: "doevoe_session", Value: "test-session-token", Path: "/admin"},
+	})
+	// Manually add the session to the admin's session map
+	a.mu.Lock()
+	a.sessions["test-session-token"] = time.Now().Add(7 * 24 * time.Hour)
+	a.mu.Unlock()
+
+	authedClient := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	// POST /admin/domains/{id}/verify with nil CheckDomain should return 500
+	resp, err := authedClient.PostForm(nilCheckSrv.URL+"/admin/domains/"+fmt.Sprintf("%d", d.ID)+"/verify", url.Values{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", resp.StatusCode)
+	}
+
+	// Verify the domain's verification flags remain false
+	updated, err := s.GetDomain(d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.SPFVerified || updated.DKIMVerified || updated.DMARCVerified {
+		t.Fatalf("expected all verification flags to be false, got SPF=%v DKIM=%v DMARC=%v",
+			updated.SPFVerified, updated.DKIMVerified, updated.DMARCVerified)
+	}
 }

@@ -242,6 +242,10 @@ func (a *Admin) verifyDomain(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if a.CheckDomain == nil {
+		http.Error(w, "verification not configured", http.StatusInternalServerError)
+		return
+	}
 	res := a.CheckDomain(r.Context(), d)
 	a.Store.SetDomainVerification(d.ID, res.SPF.OK, res.DKIM.OK, res.DMARC.OK, store.Now())
 	http.Redirect(w, r, fmt.Sprintf("/admin/domains/%d", d.ID), http.StatusSeeOther)
