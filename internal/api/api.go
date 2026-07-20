@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/mail"
 	"strconv"
@@ -10,6 +11,13 @@ import (
 	"doevoe/internal/delivery"
 	"doevoe/internal/store"
 )
+
+// maxRequestBodyBytes caps the size of a POST /api/v1/emails body. Without
+// this, an unauthenticated-in-effect (or malicious authenticated) caller
+// could send an arbitrarily large body and exhaust memory/disk decoding and
+// storing it; 10MB comfortably covers any legitimate transactional email
+// (including a large embedded HTML body) while bounding the worst case.
+const maxRequestBodyBytes = 10 << 20 // 10MB
 
 type Server struct{ Store *store.Store }
 
@@ -33,9 +41,22 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) *store.APIKey {
 	return k
 }
 
+// sendRequest mirrors the public API's JSON request body. Explicit tags are
+// required on every field: without them, encoding/json's case-insensitive
+// fallback matches "ReplyTo" against keys like "replyto" or "REPLYTO", but
+// NOT against the spec's snake_case "reply_to" (the fallback ignores case,
+// not underscores), so a caller-supplied reply_to would silently decode to
+// "" instead of erroring or populating the field. Every other field happens
+// to work by accident today because none of the others contain an
+// underscore in the wire format.
 type sendRequest struct {
-	From, To, Subject, HTML, Text, ReplyTo string
-	Headers                                map[string]string
+	From    string            `json:"from"`
+	To      string            `json:"to"`
+	Subject string            `json:"subject"`
+	HTML    string            `json:"html"`
+	Text    string            `json:"text"`
+	ReplyTo string            `json:"reply_to"`
+	Headers map[string]string `json:"headers"`
 }
 
 func (s *Server) postEmail(w http.ResponseWriter, r *http.Request) {
@@ -43,8 +64,14 @@ func (s *Server) postEmail(w http.ResponseWriter, r *http.Request) {
 	if k == nil {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	var req sendRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			jsonError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		jsonError(w, 400, "invalid json: "+err.Error())
 		return
 	}

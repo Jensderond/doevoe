@@ -290,9 +290,16 @@ func TestEnqueueOrReplayRecoversFromIndexRace(t *testing.T) {
 func TestPostIngressValidation(t *testing.T) {
 	f := setup(t, true)
 
+	// Tagged to match the wire spec (snake_case reply_to) rather than relying
+	// on Go's default field-name marshaling, since sendRequest now requires
+	// an exact (or case-insensitive, non-underscore) tag match to decode.
 	type body struct {
-		From, To, Subject, Text, ReplyTo string
-		Headers                          map[string]string `json:",omitempty"`
+		From    string            `json:"from"`
+		To      string            `json:"to"`
+		Subject string            `json:"subject"`
+		Text    string            `json:"text"`
+		ReplyTo string            `json:"reply_to"`
+		Headers map[string]string `json:"headers,omitempty"`
 	}
 	marshal := func(b body) string {
 		out, err := json.Marshal(b)
@@ -329,5 +336,46 @@ func TestPostIngressValidation(t *testing.T) {
 		if resp := f.post(t, marshal(c.b), f.token, ""); resp.StatusCode != 422 {
 			t.Errorf("%s: got %d want 422", c.name, resp.StatusCode)
 		}
+	}
+}
+
+// TestPostEmailReplyToJSONTag is a regression test for the critical finding
+// that sendRequest had no JSON tags: encoding/json's case-insensitive
+// fallback does not bridge "reply_to" (wire format) to "ReplyTo" (Go field
+// name) because it ignores case but not underscores, so reply_to silently
+// decoded to "". This POSTs a raw, hand-written JSON string shaped exactly
+// like the public API spec (not marshaled from any Go struct, so there is
+// no way for the test itself to accidentally paper over the bug) and
+// asserts the stored row actually captured ReplyTo.
+func TestPostEmailReplyToJSONTag(t *testing.T) {
+	f := setup(t, true)
+	const body = `{"from":"info@example.com","to":"u@dest.test","subject":"Hi","text":"yo","reply_to":"support@example.com"}`
+	resp := f.post(t, body, f.token, "")
+	if resp.StatusCode != 202 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	e, err := f.store.GetEmail(out.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.ReplyTo != "support@example.com" {
+		t.Fatalf("ReplyTo = %q, want %q", e.ReplyTo, "support@example.com")
+	}
+}
+
+// TestPostEmailOversizedBodyRejected covers Finding 5: a request body over
+// maxRequestBodyBytes must be rejected with 413 rather than decoded (and
+// potentially exhausting memory) in full.
+func TestPostEmailOversizedBodyRejected(t *testing.T) {
+	f := setup(t, true)
+	huge := strings.Repeat("a", 11<<20) // 11MB, over the 10MB cap
+	body := `{"from":"info@example.com","to":"u@dest.test","subject":"Hi","text":"` + huge + `"}`
+	resp := f.post(t, body, f.token, "")
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413", resp.StatusCode)
 	}
 }
