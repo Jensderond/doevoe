@@ -3,16 +3,30 @@ package dnscheck
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 )
 
 type fakeResolver map[string][]string
 
+// LookupTXT reports a genuine "no such record" the way a real resolver
+// does: a *net.DNSError with IsNotFound set. This matters now that dnscheck
+// distinguishes absence from transport failure - a generic error here would
+// be (mis)classified as Indeterminate instead of "record missing".
 func (f fakeResolver) LookupTXT(_ context.Context, name string) ([]string, error) {
 	if v, ok := f[name]; ok {
 		return v, nil
 	}
-	return nil, errors.New("no such host")
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
+// erroringResolver always fails every lookup with a transport-style error
+// (not a not-found DNS error), simulating a resolver blip (timeout,
+// SERVFAIL, network partition, ...).
+type erroringResolver struct{ err error }
+
+func (r erroringResolver) LookupTXT(_ context.Context, name string) ([]string, error) {
+	return nil, r.err
 }
 
 func TestCheckAllVerified(t *testing.T) {
@@ -54,5 +68,31 @@ func TestCheckMultipleSPFRecords(t *testing.T) {
 	}
 	if res.SPF.Found != "v=spf1 ip4:203.0.113.7 -all" {
 		t.Errorf("want SPF.Found to be first matching record, got %q", res.SPF.Found)
+	}
+}
+
+// TestCheckTransportErrorIsIndeterminate covers the critical fail-closed
+// finding: a resolver blip (timeout, SERVFAIL, ...) must not be conflated
+// with a genuinely absent record. Callers rely on Indeterminate=true here to
+// know they must not persist this result as a real re-check.
+func TestCheckTransportErrorIsIndeterminate(t *testing.T) {
+	r := erroringResolver{err: errors.New("i/o timeout")}
+	res := Check(context.Background(), r, "example.com", "mail1", "ABCDEF", "203.0.113.7")
+	if !res.Indeterminate {
+		t.Fatalf("want Indeterminate=true on a transport error: %+v", res)
+	}
+}
+
+// TestCheckNotFoundIsNotIndeterminate is the counterpart: a record that is
+// genuinely absent (net.DNSError with IsNotFound) is a normal, determinate
+// "missing" result, not an indeterminate one.
+func TestCheckNotFoundIsNotIndeterminate(t *testing.T) {
+	r := fakeResolver{} // no records configured -> NotFound for every lookup
+	res := Check(context.Background(), r, "example.com", "mail1", "ABCDEF", "203.0.113.7")
+	if res.Indeterminate {
+		t.Fatalf("want Indeterminate=false when records are merely absent: %+v", res)
+	}
+	if res.SPF.OK || res.DKIM.OK || res.DMARC.OK {
+		t.Fatalf("want all not-OK: %+v", res)
 	}
 }

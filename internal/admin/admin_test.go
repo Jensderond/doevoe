@@ -34,6 +34,7 @@ func adminFixture(t *testing.T) (*store.Store, *httptest.Server, *http.Client) {
 	}
 	t.Cleanup(func() { s.Close() })
 	a := New(s, "hunter2", "203.0.113.7", "ops@example.com", "mail.example.com")
+	a.loginFailDelay = 0 // keep bad-password tests fast
 	a.CheckDomain = func(ctx context.Context, d *store.Domain) dnscheck.Result {
 		return fakeCheckResult
 	}

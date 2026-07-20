@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/mail"
 	"strconv"
@@ -30,13 +31,19 @@ type Admin struct {
 	OnKeyCreated, OnKeyRevoked               func(name, domainName string)
 	CheckDomain                              func(ctx context.Context, d *store.Domain) dnscheck.Result
 
+	// loginFailDelay is slept before responding to a failed login attempt,
+	// to throttle password-guessing. Defaults to 1s (see New); tests set it
+	// to 0 so the bad-password test cases stay fast.
+	loginFailDelay time.Duration
+
 	mu       sync.Mutex
 	sessions map[string]time.Time
 }
 
 func New(s *store.Store, password, egressIP, adminEmail, hostname string) *Admin {
 	return &Admin{Store: s, Password: password, EgressIP: egressIP,
-		AdminEmail: adminEmail, Hostname: hostname, sessions: map[string]time.Time{}}
+		AdminEmail: adminEmail, Hostname: hostname, sessions: map[string]time.Time{},
+		loginFailDelay: 1 * time.Second}
 }
 
 func (a *Admin) Routes(mux *http.ServeMux) {
@@ -64,6 +71,10 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 
 func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 	if subtle.ConstantTimeCompare([]byte(r.FormValue("password")), []byte(a.Password)) != 1 {
+		slog.Warn("admin login failed", "remote", r.RemoteAddr)
+		if a.loginFailDelay > 0 {
+			time.Sleep(a.loginFailDelay)
+		}
 		a.renderStatus(w, http.StatusUnauthorized, "login", map[string]any{"Error": "Wrong password"})
 		return
 	}
@@ -245,7 +256,15 @@ func (a *Admin) verifyDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res := a.CheckDomain(r.Context(), d)
-	a.Store.SetDomainVerification(d.ID, res.SPF.OK, res.DKIM.OK, res.DMARC.OK, store.Now())
+	if res.Indeterminate {
+		// A transient resolver failure, not a genuine "record missing"
+		// answer: persisting this would flip an already-verified domain to
+		// unverified (and fail-close its sends with 403) on a mere DNS
+		// blip. Skip the write and just redirect back unchanged.
+		slog.Warn("dns verification indeterminate; not persisting", "domain", d.Name)
+	} else {
+		a.Store.SetDomainVerification(d.ID, res.SPF.OK, res.DKIM.OK, res.DMARC.OK, store.Now())
+	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/domains/%d", d.ID), http.StatusSeeOther)
 }
 

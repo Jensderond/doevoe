@@ -53,7 +53,10 @@ func main() {
 		pub, err := dkimkeys.PublicB64FromPrivatePEM(d.DKIMPrivateKey)
 		if err != nil {
 			slog.Error("dkim public key", "domain", d.Name, "err", err)
-			return dnscheck.Result{}
+			// Can't tell whether DNS is actually wrong without a valid key
+			// to compare against; treat like any other indeterminate check
+			// so callers don't persist a false "unverified".
+			return dnscheck.Result{Indeterminate: true}
 		}
 		return dnscheck.Check(ctx, net.DefaultResolver, d.Name, d.DKIMSelector, pub, cfg.EgressIP)
 	}
@@ -87,7 +90,14 @@ func main() {
 		recheckDNSLoop(ctx, s, checkDomain) // hourly re-verification per spec
 	}()
 
-	srv := &http.Server{Addr: cfg.Listen, Handler: mux}
+	srv := &http.Server{
+		Addr:    cfg.Listen,
+		Handler: mux,
+		// Bounds how long a slow/malicious client can hold a connection open
+		// while trickling in request headers, so one such client can't tie
+		// up a listener goroutine indefinitely.
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -128,6 +138,14 @@ func recheckDNSLoop(ctx context.Context, s *store.Store, check func(context.Cont
 			}
 			for _, d := range domains {
 				res := check(ctx, d)
+				if res.Indeterminate {
+					// Transient resolver failure (or an unparsable DKIM key):
+					// not a genuine re-check result, so don't let it flip an
+					// already-verified domain to unverified and fail-close
+					// its sends with 403 on a mere blip.
+					slog.Warn("dns recheck indeterminate; not persisting", "domain", d.Name)
+					continue
+				}
 				s.SetDomainVerification(d.ID, res.SPF.OK, res.DKIM.OK, res.DMARC.OK, store.Now())
 			}
 		}

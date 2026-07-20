@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -48,6 +49,44 @@ func TestVerifyDomainUpdatesFlags(t *testing.T) {
 		t.Fatalf("flags: %+v", d)
 	}
 	_ = context.Background
+}
+
+// TestVerifyDomainIndeterminateDoesNotPersist covers the fail-closed DNS
+// finding: a resolver blip (Indeterminate=true) must not overwrite the
+// domain's verification flags, and the request must still 303 back to the
+// domain page.
+func TestVerifyDomainIndeterminateDoesNotPersist(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	c.PostForm(srv.URL+"/admin/domains", url.Values{"name": {"client.example"}})
+	d, _ := s.GetDomainByName("client.example")
+
+	// First, genuinely verify the domain so we can prove a later
+	// indeterminate check doesn't flip it back to unverified.
+	setFakeCheck(t, dnscheck.Result{
+		SPF:   dnscheck.RecordResult{OK: true},
+		DKIM:  dnscheck.RecordResult{OK: true},
+		DMARC: dnscheck.RecordResult{OK: true},
+	})
+	resp, _ := c.PostForm(srv.URL+"/admin/domains/1/verify", nil)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("verify: %d", resp.StatusCode)
+	}
+	d, _ = s.GetDomain(d.ID)
+	if !d.Verified() {
+		t.Fatalf("expected domain verified before indeterminate check: %+v", d)
+	}
+
+	// Now simulate a resolver blip: the flags must remain unchanged.
+	setFakeCheck(t, dnscheck.Result{Indeterminate: true})
+	resp, _ = c.PostForm(srv.URL+"/admin/domains/1/verify", nil)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("verify: %d", resp.StatusCode)
+	}
+	d, _ = s.GetDomain(d.ID)
+	if !d.SPFVerified || !d.DKIMVerified || !d.DMARCVerified {
+		t.Fatalf("indeterminate check must not change verification flags: %+v", d)
+	}
 }
 
 func TestAPIKeyCreateShowsTokenOnce(t *testing.T) {
