@@ -1,0 +1,9 @@
+{{define "content"}}
+<h1>Log in</h1>
+{{with .Error}}<p class="error">{{.}}</p>{{end}}
+<form method="post" action="/admin/login" class="card">
+  <label for="password">Admin password</label>
+  <input type="password" id="password" name="password" autofocus autocomplete="current-password">
+  <button type="submit">Log in</button>
+</form>
+{{end}}

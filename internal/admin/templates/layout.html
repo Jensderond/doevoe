@@ -1,0 +1,21 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>doevoe admin</title>
+<link rel="stylesheet" href="/admin/static/doevoe.css">
+</head>
+<body>
+<nav>
+  <strong>doevoe</strong>
+  <a href="/admin/emails">Emails</a>
+  <a href="/admin/domains">Domains</a>
+  <a href="/admin/keys">API keys</a>
+  <form method="post" action="/admin/logout"><button class="link">Log out</button></form>
+</nav>
+<main class="container">
+{{template "content" .}}
+</main>
+</body>
+</html>{{end}}
