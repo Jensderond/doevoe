@@ -10,6 +10,11 @@ type DomainStats struct {
 	Sent, Failed int
 }
 
+type ReasonCount struct {
+	Reason string
+	Count  int
+}
+
 func (s *Store) GetState(key string) (string, error) {
 	var v string
 	err := s.db.QueryRow(`SELECT value FROM notify_state WHERE key=?`, key).Scan(&v)
@@ -82,4 +87,21 @@ func (s *Store) FailureRate(domainID int64, since string) (failed, total int, er
 		FROM delivery_attempts a JOIN emails e ON e.id=a.email_id
 		WHERE e.domain_id=? AND a.created_at>=?`, domainID, since).Scan(&failed, &total)
 	return
+}
+
+func (s *Store) TopFailureReasons(monthPrefix string, limit int) ([]ReasonCount, error) {
+	rows, err := s.db.Query(`SELECT last_error, COUNT(*) FROM emails WHERE status='failed' AND created_at LIKE ?||'%' AND last_error != '' GROUP BY last_error ORDER BY COUNT(*) DESC LIMIT ?`, monthPrefix, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ReasonCount
+	for rows.Next() {
+		var rc ReasonCount
+		if err := rows.Scan(&rc.Reason, &rc.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, rc)
+	}
+	return out, rows.Err()
 }
