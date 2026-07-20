@@ -9,6 +9,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"doevoe/internal/store"
@@ -47,11 +48,28 @@ type Result struct {
 	TLS bool
 }
 
+// defaultOverallTimeout is the hard per-Send deadline applied when
+// OverallTimeout is unset (zero), which includes struct-literal Senders built
+// directly by tests rather than via NewSender. It bounds the entirety of a
+// single Send call at the socket level (see the SetDeadline call in connect's
+// dial closure below), including phases that would otherwise run under
+// go-smtp's own internal timers - most notably smtp.NewClientStartTLS's
+// greet+EHLO+STARTTLS handshake, which happens before CommandTimeout/
+// SubmissionTimeout are ever assigned to the resulting *smtp.Client. 30m
+// leaves the worker's 45m stale-'sending' requeue window (see worker.go)
+// comfortable headroom above the worst case.
+const defaultOverallTimeout = 30 * time.Minute
+
 type Sender struct {
 	Hostname  string
 	Port      int
 	LookupMX  func(ctx context.Context, domain string) ([]*net.MX, error)
 	TLSConfig func(host string) *tls.Config
+	// OverallTimeout hard-bounds a single Send call, including the STARTTLS
+	// handshake that smtp.NewClientStartTLS performs internally before
+	// CommandTimeout/SubmissionTimeout apply. Zero (e.g. a struct-literal
+	// Sender built directly in tests) is treated as defaultOverallTimeout.
+	OverallTimeout time.Duration
 }
 
 func NewSender(hostname string, port int) *Sender {
@@ -61,11 +79,19 @@ func NewSender(hostname string, port int) *Sender {
 		LookupMX: func(ctx context.Context, domain string) ([]*net.MX, error) {
 			return net.DefaultResolver.LookupMX(ctx, domain)
 		},
-		TLSConfig: func(host string) *tls.Config { return &tls.Config{ServerName: host} },
+		TLSConfig:      func(host string) *tls.Config { return &tls.Config{ServerName: host} },
+		OverallTimeout: defaultOverallTimeout,
 	}
 }
 
 func (s *Sender) Send(ctx context.Context, e *store.Email, d *store.Domain) Result {
+	overall := s.OverallTimeout
+	if overall == 0 {
+		overall = defaultOverallTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, overall)
+	defer cancel()
+
 	start := time.Now()
 	fail := func(host string, err error) Result {
 		res := Result{MXHost: host, Duration: time.Since(start), Err: err}
@@ -175,9 +201,25 @@ func (s *Sender) deliverTo(ctx context.Context, host, from, to, msg string) (boo
 // TLS/transport problem, so it is surfaced for classification instead of
 // triggering a downgrade.
 func (s *Sender) connect(ctx context.Context, host string) (*smtp.Client, bool, error) {
+	// dial opens the TCP connection and immediately arms a watcher (see
+	// ctxBoundConn below) that ties the conn's deadline to ctx (bounded by
+	// Send's OverallTimeout, above). This is what actually bounds
+	// smtp.NewClientStartTLS's internal greet+EHLO+STARTTLS handshake below:
+	// that call happens before CommandTimeout/SubmissionTimeout are assigned
+	// to the resulting *smtp.Client, so without this it would run under
+	// go-smtp's own (much longer) internal defaults instead. tls.Conn
+	// delegates SetDeadline/Read/Write to the underlying conn, so the same
+	// watcher also bounds the TLS handshake performed when upgrading. Both
+	// call sites below - the initial TLS-capable dial and the plaintext
+	// (opportunistic-downgrade) redial - go through this closure, so both are
+	// covered.
 	dial := func() (net.Conn, error) {
 		d := &net.Dialer{Timeout: 30 * time.Second}
-		return d.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, s.Port))
+		conn, err := d.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, s.Port))
+		if err != nil {
+			return nil, err
+		}
+		return newCtxBoundConn(ctx, conn), nil
 	}
 
 	plaintext := func() (*smtp.Client, error) {
@@ -235,4 +277,51 @@ func (s *Sender) connect(ctx context.Context, host string) (*smtp.Client, bool, 
 // asSMTPError reports whether err wraps an *smtp.SMTPError, setting target if so.
 func asSMTPError(err error, target **smtp.SMTPError) bool {
 	return errors.As(err, target)
+}
+
+// ctxBoundConn wraps a net.Conn so that ctx expiring (its OverallTimeout
+// deadline elapsing, or the caller's ctx being canceled) forces the conn's
+// deadline into the past, immediately failing whatever I/O is in flight (or
+// the next I/O issued).
+//
+// A single SetDeadline call made right after dial is NOT enough here: on
+// every command, go-smtp's *smtp.Client itself calls
+// conn.SetDeadline(time.Now().Add(CommandTimeout)) and then resets it back
+// to no-deadline (time.Time{}) once the command completes (see
+// (*Client).greet/(*Client).cmd and the post-DATA reply path in
+// github.com/emersion/go-smtp@v0.24.0/client.go) - including inside
+// smtp.NewClientStartTLS's internal greet+EHLO+STARTTLS handshake, which
+// runs under go-smtp's own default 5m CommandTimeout before this package
+// ever gets a chance to assign its own commandTimeout/submissionTimeout. A
+// one-time SetDeadline call would simply be overwritten (or erased) by that
+// per-command bookkeeping. Watching ctx and forcing the deadline into the
+// past the instant it's done applies no matter what go-smtp itself just set
+// or cleared, which is what actually makes ctx's deadline (derived from
+// Sender.OverallTimeout in Send) a hard cap on every I/O op on this conn.
+type ctxBoundConn struct {
+	net.Conn
+	stop func()
+}
+
+func newCtxBoundConn(ctx context.Context, conn net.Conn) *ctxBoundConn {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.SetDeadline(time.Now())
+		case <-done:
+		}
+	}()
+	var once sync.Once
+	return &ctxBoundConn{Conn: conn, stop: func() { once.Do(func() { close(done) }) }}
+}
+
+// Close stops the watcher goroutine before closing the underlying conn, so
+// it doesn't linger past the life of the connection. Safe to call multiple
+// times (e.g. via both a caller's explicit Close and a deferred one):
+// stop() is idempotent, and closing an already-closed net.Conn just returns
+// an error, which callers here already ignore or tolerate.
+func (c *ctxBoundConn) Close() error {
+	c.stop()
+	return c.Conn.Close()
 }

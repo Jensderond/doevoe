@@ -24,8 +24,9 @@ import (
 
 // capturing test SMTP backend
 type testBackend struct {
-	messages []string
-	rejectTo string // when set, RCPT TO this address returns 550
+	messages  []string
+	rejectTo  string        // when set, RCPT TO this address returns 550
+	dataDelay time.Duration // when set, Data sleeps this long before responding
 }
 
 type testSession struct{ b *testBackend }
@@ -39,6 +40,9 @@ func (s *testSession) Rcpt(to string, _ *smtp.RcptOptions) error {
 	return nil
 }
 func (s *testSession) Data(r io.Reader) error {
+	if s.b.dataDelay > 0 {
+		time.Sleep(s.b.dataDelay)
+	}
 	data, _ := io.ReadAll(r)
 	s.b.messages = append(s.b.messages, string(data))
 	return nil
@@ -203,6 +207,42 @@ func TestSendSTARTTLSHandshakeFailureFallsBackToPlaintext(t *testing.T) {
 	}
 	if len(b.messages) != 1 || !strings.Contains(b.messages[0], "DKIM-Signature:") {
 		t.Fatalf("server got: %v", b.messages)
+	}
+}
+
+// TestSendOverallTimeoutBoundsAllIO verifies that Sender.OverallTimeout is a
+// hard, socket-level cap that bounds every phase of Send - not just the
+// commandTimeout/submissionTimeout window inside an already-established
+// *smtp.Client. It uses a struct-literal Sender (OverallTimeout left unset in
+// testSender, then overridden to a tiny value here) against a server whose
+// Data handler stalls for longer than that timeout, so the deadline must
+// expire mid-conversation (well after dial/EHLO, which are near-instant
+// against a local server) rather than at connect time. This is the same
+// mechanism (conn.SetDeadline in connect's dial closure) that bounds
+// smtp.NewClientStartTLS's internal handshake in the STARTTLS tests above;
+// TestSendSTARTTLSSuccess/TestSendSTARTTLSHandshakeFailureFallsBackToPlaintext
+// passing alongside this confirms the default 30m OverallTimeout doesn't
+// interfere with normal (fast) STARTTLS handshakes.
+func TestSendOverallTimeoutBoundsAllIO(t *testing.T) {
+	b := &testBackend{dataDelay: 2 * time.Second}
+	_, port := startTestSMTP(t, b)
+	e, d := testEmailAndDomain(t, "ok@dest.test")
+
+	sender := testSender(port)
+	sender.OverallTimeout = 300 * time.Millisecond
+
+	start := time.Now()
+	res := sender.Send(context.Background(), e, d)
+	elapsed := time.Since(start)
+
+	if elapsed > time.Second {
+		t.Fatalf("Send took %v, want bounded by the 300ms OverallTimeout (with margin), well under the 2s Data stall", elapsed)
+	}
+	if res.Err == nil {
+		t.Fatalf("want a non-nil error when OverallTimeout expires mid-conversation, got success: %+v", res)
+	}
+	if Classify(res.Err) != ClassTemp {
+		t.Fatalf("want temp-classified error (deadline/timeout, not a real SMTP rejection), got %+v (class %v)", res.Err, Classify(res.Err))
 	}
 }
 

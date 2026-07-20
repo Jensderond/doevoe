@@ -44,15 +44,19 @@ func (w *Worker) Run(ctx context.Context) {
 // staleSendingWindow bounds how long an email may sit in 'sending' before
 // RequeueStaleSending puts it back on the queue for another worker tick to
 // pick up. It must comfortably exceed the sender's worst-case time to give
-// up on a single Send: up to maxMXAttempts (3) MX hosts walked
-// sequentially, each bounded by commandTimeout (2m, for several SMTP
-// commands - EHLO/MAIL/RCPT/DATA-open) plus submissionTimeout (5m, for the
-// final post-DATA response) - roughly 3 * (2m*~3 + 5m) ~= 33m worst case.
-// 45m leaves headroom above that so a send that is merely slow (e.g. a
-// tarpitting MX) doesn't get requeued and re-sent by a second worker while
-// the first is still in flight, which would double-deliver the email. See
-// internal/delivery/sender.go for the timeout/attempt-cap constants this is
-// derived from.
+// up on a single Send. That worst case is now a hard, socket-level cap:
+// Sender.OverallTimeout (30m by default, see NewSender/defaultOverallTimeout
+// in sender.go) wraps the entire Send call in a context deadline that is set
+// on every dialed conn immediately after dial, bounding ALL I/O on that
+// conn - including smtp.NewClientStartTLS's internal greet+EHLO+STARTTLS
+// handshake, which otherwise runs before commandTimeout/submissionTimeout
+// are ever assigned and would escape them. commandTimeout/submissionTimeout
+// remain in effect as an inner bound within that 30m envelope. 45m leaves
+// 15m of headroom above the 30m hard cap so a send that is merely slow
+// (e.g. a tarpitting MX) doesn't get requeued and re-sent by a second worker
+// while the first is still in flight, which would double-deliver the email.
+// See internal/delivery/sender.go for the timeout/attempt-cap constants this
+// is derived from.
 const staleSendingWindow = 45 * time.Minute
 
 func (w *Worker) Tick(ctx context.Context, now time.Time) error {
