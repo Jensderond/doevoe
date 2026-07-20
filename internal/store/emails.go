@@ -60,9 +60,13 @@ func (s *Store) FindByIdempotencyKey(apiKeyID int64, key string) (*Email, error)
 }
 
 func (s *Store) ClaimDue(limit int, now string) ([]*Email, error) {
-	rows, err := s.db.Query(`UPDATE emails SET status='sending'
+	// next_attempt_at is stamped with the claim time here even though it plays no
+	// scheduling role while status='sending' (MarkRetry/MarkSent overwrite it on
+	// completion). It exists purely so RequeueStaleSending can tell a row that has
+	// been "sending" too long (crash/redeploy mid-send) from one claimed moments ago.
+	rows, err := s.db.Query(`UPDATE emails SET status='sending', next_attempt_at=?
 		WHERE id IN (SELECT id FROM emails WHERE status='queued' AND next_attempt_at<=? ORDER BY next_attempt_at LIMIT ?)
-		RETURNING `+emailCols, now, limit)
+		RETURNING `+emailCols, now, now, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -76,6 +80,19 @@ func (s *Store) ClaimDue(limit int, now string) ([]*Email, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// RequeueStaleSending resets emails stuck in 'sending' (e.g. because the process
+// crashed mid-send) back to 'queued' so they get picked up again. A row is
+// considered stale when its next_attempt_at (stamped at claim time by ClaimDue)
+// is older than the given cutoff. Callers pass cutoff = now - staleness window;
+// the store itself does no time math.
+func (s *Store) RequeueStaleSending(olderThan string) (int64, error) {
+	res, err := s.db.Exec(`UPDATE emails SET status='queued' WHERE status='sending' AND next_attempt_at<=?`, olderThan)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *Store) MarkSent(id int64, at string) error {

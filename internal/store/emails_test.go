@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func enqueueTest(t *testing.T, s *Store, domainID int64, to string) int64 {
 	t.Helper()
@@ -64,6 +67,43 @@ func TestRequeueWithRecipientEdit(t *testing.T) {
 	e, _ := s.GetEmail(id)
 	if e.To != "u@gmail.com" || e.OriginalTo != "u@gmial.com" || e.Status != "queued" || e.Attempts != 0 {
 		t.Fatalf("after requeue: %+v", e)
+	}
+}
+
+func TestRequeueStaleSending(t *testing.T) {
+	s := testStore(t)
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	staleID := enqueueTest(t, s, d.ID, "stale@dest.test")
+	freshID := enqueueTest(t, s, d.ID, "fresh@dest.test")
+
+	claimed, err := s.ClaimDue(10, Now())
+	if err != nil || len(claimed) != 2 {
+		t.Fatalf("claim: %v %v", claimed, err)
+	}
+
+	// Backdate the stale email's next_attempt_at (stamped at claim time) by 20m
+	// so it looks like it's been stuck in 'sending' for a while.
+	backdated := FmtTime(time.Now().Add(-20 * time.Minute))
+	if _, err := s.db.Exec(`UPDATE emails SET next_attempt_at=? WHERE id=?`, backdated, staleID); err != nil {
+		t.Fatal(err)
+	}
+
+	cutoff := FmtTime(time.Now().Add(-15 * time.Minute))
+	n, err := s.RequeueStaleSending(cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 requeued, got %d", n)
+	}
+
+	stale, _ := s.GetEmail(staleID)
+	if stale.Status != "queued" {
+		t.Errorf("stale email should be requeued: %+v", stale)
+	}
+	fresh, _ := s.GetEmail(freshID)
+	if fresh.Status != "sending" {
+		t.Errorf("freshly claimed email must not be requeued: %+v", fresh)
 	}
 }
 
