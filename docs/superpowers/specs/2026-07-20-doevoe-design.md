@@ -79,6 +79,8 @@ A **Verify** button does live lookups, marking each record ✓/✗ with found-vs
 
 ## 6. Admin UI
 
+The admin UI is **mobile-first**: layouts are designed for phone screens first (single-column cards, large touch targets, no horizontal scrolling), then enhanced at larger breakpoints with `min-width` media queries (e.g. list views become tables on desktop). Server-rendered HTML, no JS framework.
+
 - **Login** — single admin account; password from env var at first boot; session cookie.
 - **Emails** — filterable list (status, domain, recipient search, date range); detail page with full attempt history and SMTP transcripts. Failed emails offer:
   - **Retry now** — re-queues as-is.
