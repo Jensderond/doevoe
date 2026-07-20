@@ -1,0 +1,33 @@
+{{define "content"}}
+<h1>API keys</h1>
+{{with .NewToken}}
+<div class="card">
+  <strong>New key created — copy it now, it will not be shown again:</strong>
+  <div class="dns-record">{{.}}</div>
+</div>
+{{end}}
+<form method="post" action="/admin/keys" class="card">
+  <label>Name <input name="name" placeholder="site-a production" required></label>
+  <label>Domain
+    <select name="domain_id">
+      {{range .Domains}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <div class="actions"><button type="submit">Create key</button></div>
+</form>
+{{range .Keys}}
+<div class="card">
+  <strong>{{.Name}}</strong> — {{index $.DomainNames .DomainID}}
+  {{if .Revoked}}<span class="badge failed">revoked</span>{{end}}
+  <div class="meta">
+    <span>Created {{.CreatedAt}}</span>
+    {{with .LastUsedAt}}<span>Last used {{.}}</span>{{end}}
+  </div>
+  {{if not .Revoked}}
+  <form method="post" action="/admin/keys/{{.ID}}/revoke" class="actions">
+    <button type="submit">Revoke</button>
+  </form>
+  {{end}}
+</div>
+{{end}}
+{{end}}

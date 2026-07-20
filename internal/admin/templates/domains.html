@@ -1,0 +1,18 @@
+{{define "content"}}
+<h1>Domains</h1>
+<form method="post" action="/admin/domains" class="card">
+  <label>Add sending domain <input name="name" placeholder="client.example" required></label>
+  <div class="actions"><button type="submit">Add domain</button></div>
+</form>
+{{range .Domains}}
+<a class="card" href="/admin/domains/{{.ID}}">
+  <strong>{{.Name}}</strong>
+  {{if .Verified}}<span class="badge sent">verified</span>{{else}}<span class="badge failed">setup needed</span>{{end}}
+  <div class="meta">
+    <span>SPF {{if .SPFVerified}}✓{{else}}✗{{end}}</span>
+    <span>DKIM {{if .DKIMVerified}}✓{{else}}✗{{end}}</span>
+    <span>DMARC {{if .DMARCVerified}}✓{{else}}✗{{end}}</span>
+  </div>
+</a>
+{{end}}
+{{end}}

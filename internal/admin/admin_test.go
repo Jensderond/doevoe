@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -10,8 +11,15 @@ import (
 	"strings"
 	"testing"
 
+	"doevoe/internal/dnscheck"
 	"doevoe/internal/store"
 )
+
+var fakeCheckResult dnscheck.Result
+
+func setFakeCheck(result dnscheck.Result) {
+	fakeCheckResult = result
+}
 
 func adminFixture(t *testing.T) (*store.Store, *httptest.Server, *http.Client) {
 	t.Helper()
@@ -21,6 +29,9 @@ func adminFixture(t *testing.T) (*store.Store, *httptest.Server, *http.Client) {
 	}
 	t.Cleanup(func() { s.Close() })
 	a := New(s, "hunter2", "203.0.113.7", "ops@example.com", "mail.example.com")
+	a.CheckDomain = func(ctx context.Context, d *store.Domain) dnscheck.Result {
+		return fakeCheckResult
+	}
 	mux := http.NewServeMux()
 	a.Routes(mux)
 	srv := httptest.NewServer(mux)

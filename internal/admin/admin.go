@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/hex"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"doevoe/internal/dkimkeys"
 	"doevoe/internal/dnscheck"
 	"doevoe/internal/store"
 )
@@ -51,7 +53,13 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /admin/emails", a.auth(a.listEmails))
 	mux.Handle("GET /admin/emails/{id}", a.auth(a.showEmail))
 	mux.Handle("POST /admin/emails/{id}/retry", a.auth(a.retryEmail))
-	// Task 11–12 add: domains…, keys…
+	mux.Handle("GET /admin/domains", a.auth(a.listDomains))
+	mux.Handle("POST /admin/domains", a.auth(a.createDomain))
+	mux.Handle("GET /admin/domains/{id}", a.auth(a.showDomain))
+	mux.Handle("POST /admin/domains/{id}/verify", a.auth(a.verifyDomain))
+	mux.Handle("GET /admin/keys", a.auth(a.listKeys))
+	mux.Handle("POST /admin/keys", a.auth(a.createKey))
+	mux.Handle("POST /admin/keys/{id}/revoke", a.auth(a.revokeKey))
 }
 
 func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
@@ -183,4 +191,117 @@ func (a *Admin) retryEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/admin/emails/"+r.PathValue("id"), http.StatusSeeOther)
+}
+
+func (a *Admin) listDomains(w http.ResponseWriter, r *http.Request) {
+	domains, _ := a.Store.ListDomains()
+	a.render(w, "domains", map[string]any{"Domains": domains})
+}
+
+func (a *Admin) createDomain(w http.ResponseWriter, r *http.Request) {
+	name := strings.ToLower(strings.TrimSpace(r.FormValue("name")))
+	if name == "" || strings.ContainsAny(name, " /@") {
+		http.Error(w, "invalid domain name", 422)
+		return
+	}
+	priv, _, err := dkimkeys.Generate()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	d, err := a.Store.CreateDomain(name, "mail1", priv)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/admin/domains/%d", d.ID), http.StatusSeeOther)
+}
+
+func (a *Admin) showDomain(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	d, err := a.Store.GetDomain(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	key, err := dkimkeys.ParsePrivateKey(d.DKIMPrivateKey)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	pubTXT, _ := dkimkeys.PublicKeyTXT(&key.PublicKey)
+	pubB64 := strings.TrimPrefix(pubTXT, "v=DKIM1; k=rsa; p=")
+	records := dkimkeys.Records(d.Name, d.DKIMSelector, pubB64, a.EgressIP, a.AdminEmail)
+	a.render(w, "domain", map[string]any{"Domain": d, "Records": records})
+}
+
+func (a *Admin) verifyDomain(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	d, err := a.Store.GetDomain(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	res := a.CheckDomain(r.Context(), d)
+	a.Store.SetDomainVerification(d.ID, res.SPF.OK, res.DKIM.OK, res.DMARC.OK, store.Now())
+	http.Redirect(w, r, fmt.Sprintf("/admin/domains/%d", d.ID), http.StatusSeeOther)
+}
+
+func (a *Admin) listKeys(w http.ResponseWriter, r *http.Request) {
+	a.renderKeys(w, "")
+}
+
+func (a *Admin) renderKeys(w http.ResponseWriter, newToken string) {
+	keys, _ := a.Store.ListAPIKeys()
+	domains, _ := a.Store.ListDomains()
+	byID := map[int64]string{}
+	for _, d := range domains {
+		byID[d.ID] = d.Name
+	}
+	a.render(w, "keys", map[string]any{"Keys": keys, "Domains": domains, "DomainNames": byID, "NewToken": newToken})
+}
+
+func (a *Admin) createKey(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.FormValue("name"))
+	domainID, _ := strconv.ParseInt(r.FormValue("domain_id"), 10, 64)
+	d, err := a.Store.GetDomain(domainID)
+	if name == "" || err != nil {
+		http.Error(w, "name and domain are required", 422)
+		return
+	}
+	token, hash, err := store.GenerateAPIKey()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if _, err := a.Store.CreateAPIKey(name, domainID, hash); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if a.OnKeyCreated != nil {
+		a.OnKeyCreated(name, d.Name)
+	}
+	a.renderKeys(w, token) // shown exactly once
+}
+
+func (a *Admin) revokeKey(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	keys, _ := a.Store.ListAPIKeys()
+	var name, domainName string
+	for _, k := range keys {
+		if k.ID == id {
+			name = k.Name
+			if d, err := a.Store.GetDomain(k.DomainID); err == nil {
+				domainName = d.Name
+			}
+		}
+	}
+	if err := a.Store.RevokeAPIKey(id); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if a.OnKeyRevoked != nil {
+		a.OnKeyRevoked(name, domainName)
+	}
+	http.Redirect(w, r, "/admin/keys", http.StatusSeeOther)
 }

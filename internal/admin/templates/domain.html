@@ -1,0 +1,26 @@
+{{define "content"}}
+<p><a href="/admin/domains">← Domains</a></p>
+<h1>{{.Domain.Name}}
+  {{if .Domain.Verified}}<span class="badge sent">verified</span>
+  {{else}}<span class="badge failed">setup needed</span>{{end}}
+</h1>
+<p>Add these DNS records for <strong>{{.Domain.Name}}</strong>, then press Verify.
+   Sending is blocked until all three are verified.</p>
+
+{{range .Records}}
+<div class="card">
+  <strong>{{.Type}}</strong>
+  {{if eq .Type "TXT (SPF)"}}{{if $.Domain.SPFVerified}}<span class="ok">✓ verified</span>{{else}}<span class="error">✗ not found</span>{{end}}{{end}}
+  {{if eq .Type "TXT (DKIM)"}}{{if $.Domain.DKIMVerified}}<span class="ok">✓ verified</span>{{else}}<span class="error">✗ not found</span>{{end}}{{end}}
+  {{if eq .Type "TXT (DMARC)"}}{{if $.Domain.DMARCVerified}}<span class="ok">✓ verified</span>{{else}}<span class="error">✗ not found</span>{{end}}{{end}}
+  <div class="meta"><span>Host: <code>{{.Host}}</code></span></div>
+  {{with .Value}}<div class="dns-record">{{.}}</div>{{end}}
+  {{with .Note}}<p>{{.}}</p>{{end}}
+</div>
+{{end}}
+
+<form method="post" action="/admin/domains/{{.Domain.ID}}/verify" class="actions">
+  <button type="submit">Verify DNS records</button>
+</form>
+{{with .Domain.LastCheckedAt}}<p class="meta">Last checked: {{.}}</p>{{end}}
+{{end}}
