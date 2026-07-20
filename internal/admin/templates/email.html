@@ -1,0 +1,38 @@
+{{define "content"}}
+<p><a href="/admin/emails">← Emails</a></p>
+<h1>Email #{{.Email.ID}} <span class="badge {{.Email.Status}}">{{.Email.Status}}</span></h1>
+
+<div class="card">
+  <div class="meta">
+    <span>From: {{.Email.From}}</span>
+    <span>To: {{if .Email.OriginalTo}}<del>{{.Email.OriginalTo}}</del> {{end}}{{.Email.To}}</span>
+    <span>Domain: {{.Domain.Name}}</span>
+    <span>Created: {{.Email.CreatedAt}}</span>
+    {{with .Email.SentAt}}<span>Sent: {{.}}</span>{{end}}
+    {{with .Email.LastError}}<span class="error">Last error: {{.}}</span>{{end}}
+  </div>
+  <h2>{{.Email.Subject}}</h2>
+  {{with .Email.BodyText}}<pre class="dns-record">{{.}}</pre>{{end}}
+</div>
+
+{{if eq .Email.Status "failed"}}
+<form method="post" action="/admin/emails/{{.Email.ID}}/retry" class="card">
+  <h2>Retry</h2>
+  <label>Recipient (edit to fix a typo, leave as-is to retry unchanged)
+    <input name="to" value="{{.Email.To}}">
+  </label>
+  <div class="actions"><button type="submit">Retry now</button></div>
+</form>
+{{end}}
+
+<h2>Delivery attempts</h2>
+{{range .Attempts}}
+<div class="card meta">
+  <span>#{{.AttemptNo}} — {{.CreatedAt}}</span>
+  <span>MX: {{.MXHost}} ({{.DurationMs}}ms)</span>
+  <span>{{if .SMTPCode}}{{.SMTPCode}} {{end}}{{.Response}}</span>
+</div>
+{{else}}
+<p>No attempts yet.</p>
+{{end}}
+{{end}}

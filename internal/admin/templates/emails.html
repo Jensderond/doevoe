@@ -1,1 +1,36 @@
-{{define "content"}}emails{{end}}
+{{define "content"}}
+<h1>Emails</h1>
+<form method="get" action="/admin/emails" class="filters">
+  <label>Status
+    <select name="status">
+      <option value="">All</option>
+      <option value="queued" {{if eq $.Status "queued"}}selected{{end}}>queued</option>
+      <option value="sending" {{if eq $.Status "sending"}}selected{{end}}>sending</option>
+      <option value="sent" {{if eq $.Status "sent"}}selected{{end}}>sent</option>
+      <option value="failed" {{if eq $.Status "failed"}}selected{{end}}>failed</option>
+    </select>
+  </label>
+  <label>Domain
+    <select name="domain">
+      <option value="0">All</option>
+      {{range .Domains}}<option value="{{.ID}}" {{if eq $.DomainID .ID}}selected{{end}}>{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <label>Search <input type="search" name="q" value="{{.Query}}" placeholder="recipient or subject"></label>
+  <button type="submit">Filter</button>
+</form>
+
+{{range .Emails}}
+<a class="card" href="/admin/emails/{{.ID}}">
+  <span class="badge {{.Status}}">{{.Status}}</span>
+  <strong>{{.To}}</strong> — {{.Subject}}
+  <div class="meta">
+    <span>{{.CreatedAt}}</span>
+    <span>{{.Attempts}} attempt(s)</span>
+    {{with .LastError}}<span class="error">{{.}}</span>{{end}}
+  </div>
+</a>
+{{else}}
+<p>No emails match.</p>
+{{end}}
+{{end}}

@@ -9,6 +9,9 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"net/mail"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,7 +49,9 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 		http.Redirect(w, r, "/admin/emails", http.StatusSeeOther)
 	}))
 	mux.Handle("GET /admin/emails", a.auth(a.listEmails))
-	// Task 11–12 add: emails/{id}, emails/{id}/retry, domains…, keys…
+	mux.Handle("GET /admin/emails/{id}", a.auth(a.showEmail))
+	mux.Handle("POST /admin/emails/{id}/retry", a.auth(a.retryEmail))
+	// Task 11–12 add: domains…, keys…
 }
 
 func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
@@ -122,5 +127,56 @@ func (a *Admin) newSession(w http.ResponseWriter) {
 }
 
 func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {
-	a.render(w, "emails", map[string]any{}) // Task 11 fills this in
+	domainID, _ := strconv.ParseInt(r.URL.Query().Get("domain"), 10, 64)
+	f := store.EmailFilter{
+		Status:   r.URL.Query().Get("status"),
+		Search:   r.URL.Query().Get("q"),
+		DomainID: domainID,
+	}
+	emails, err := a.Store.ListEmails(f)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	domains, _ := a.Store.ListDomains()
+	a.render(w, "emails", map[string]any{
+		"Emails": emails, "Domains": domains,
+		"Status": f.Status, "Query": f.Search, "DomainID": domainID,
+	})
+}
+
+func (a *Admin) showEmail(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	e, err := a.Store.GetEmail(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	attempts, _ := a.Store.ListAttempts(id)
+	domain, _ := a.Store.GetDomain(e.DomainID)
+	a.render(w, "email", map[string]any{"Email": e, "Attempts": attempts, "Domain": domain})
+}
+
+func (a *Admin) retryEmail(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	newTo := strings.TrimSpace(r.FormValue("to"))
+	if newTo != "" {
+		if _, err := mail.ParseAddress(newTo); err != nil {
+			http.Error(w, "invalid address", 422)
+			return
+		}
+		e, err := a.Store.GetEmail(id)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if newTo == e.To {
+			newTo = "" // unchanged: plain retry
+		}
+	}
+	if err := a.Store.RequeueEmail(id, newTo); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	http.Redirect(w, r, "/admin/emails/"+r.PathValue("id"), http.StatusSeeOther)
 }
