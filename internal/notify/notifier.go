@@ -20,17 +20,23 @@ type Notifier struct {
 func (n *Notifier) Run(ctx context.Context) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
+	ticks := []struct {
+		name string
+		fn   func(time.Time) error
+	}{
+		{"digest", n.DigestTick},
+		{"rate", n.RateTick},
+		{"stats", n.StatsTick},
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 			now := time.Now().UTC()
-			for name, tick := range map[string]func(time.Time) error{
-				"digest": n.DigestTick, "rate": n.RateTick, "stats": n.StatsTick,
-			} {
-				if err := tick(now); err != nil {
-					slog.Error("notifier", "tick", name, "err", err)
+			for _, tick := range ticks {
+				if err := tick.fn(now); err != nil {
+					slog.Error("notifier", "tick", tick.name, "err", err)
 				}
 			}
 		}
@@ -65,13 +71,17 @@ func (n *Notifier) PermanentFailure(emailID int64) {
 }
 
 func (n *Notifier) KeyCreated(name, domainName string) {
-	n.enqueue("doevoe: API key created",
-		fmt.Sprintf("API key %q for domain %s was created.\n\n%s/admin/keys\n", name, domainName, n.BaseURL))
+	if _, err := n.enqueue("doevoe: API key created",
+		fmt.Sprintf("API key %q for domain %s was created.\n\n%s/admin/keys\n", name, domainName, n.BaseURL)); err != nil {
+		slog.Error("notifier: key created notification failed", "key", name, "domain", domainName, "err", err)
+	}
 }
 
 func (n *Notifier) KeyRevoked(name, domainName string) {
-	n.enqueue("doevoe: API key revoked",
-		fmt.Sprintf("API key %q for domain %s was revoked.\n\n%s/admin/keys\n", name, domainName, n.BaseURL))
+	if _, err := n.enqueue("doevoe: API key revoked",
+		fmt.Sprintf("API key %q for domain %s was revoked.\n\n%s/admin/keys\n", name, domainName, n.BaseURL)); err != nil {
+		slog.Error("notifier: key revoked notification failed", "key", name, "domain", domainName, "err", err)
+	}
 }
 
 func (n *Notifier) DigestTick(now time.Time) error {
@@ -93,8 +103,19 @@ func (n *Notifier) DigestTick(now time.Time) error {
 	if err != nil || !sent {
 		return err // keep pending for the next tick
 	}
-	n.Store.SetState("digest_last_sent", store.FmtTime(now))
-	return n.Store.ClearPendingFailures()
+	// Clear pending first: if SetState below fails we only lose the cooldown
+	// marker (harmless — the digest only sends when pending is non-empty),
+	// rather than clearing state but leaving pending to be resent as a
+	// duplicate-content digest.
+	if err := n.Store.ClearPendingFailures(); err != nil {
+		slog.Error("notifier: clearing pending failures failed", "err", err)
+		return err
+	}
+	if err := n.Store.SetState("digest_last_sent", store.FmtTime(now)); err != nil {
+		slog.Error("notifier: setting digest_last_sent state failed", "err", err)
+		return err
+	}
+	return nil
 }
 
 func (n *Notifier) RateTick(now time.Time) error {
@@ -106,7 +127,8 @@ func (n *Notifier) RateTick(now time.Time) error {
 	for _, d := range domains {
 		failed, total, err := n.Store.FailureRate(d.ID, since)
 		if err != nil {
-			return err
+			slog.Error("notifier: failure rate lookup failed", "domain", d.Name, "err", err)
+			continue
 		}
 		stateKey := "rate_fired_" + d.Name
 		fired, _ := n.Store.GetState(stateKey)
@@ -123,10 +145,16 @@ func (n *Notifier) RateTick(now time.Time) error {
 				return err
 			}
 			if sent {
-				n.Store.SetState(stateKey, "fired")
+				if err := n.Store.SetState(stateKey, "fired"); err != nil {
+					slog.Error("notifier: setting rate_fired state failed", "domain", d.Name, "err", err)
+					return err
+				}
 			}
 		case rate < n.Threshold && fired == "fired":
-			n.Store.SetState(stateKey, "") // re-arm
+			if err := n.Store.SetState(stateKey, ""); err != nil { // re-arm
+				slog.Error("notifier: re-arming rate_fired state failed", "domain", d.Name, "err", err)
+				return err
+			}
 		}
 	}
 	return nil
@@ -141,13 +169,23 @@ func (n *Notifier) StatsTick(now time.Time) error {
 	if last == current {
 		return nil
 	}
-	prev := now.AddDate(0, -1, 0).Format("2006-01")
+	// Normalize to first-of-month before subtracting: AddDate on e.g. the 31st
+	// can overflow into the current month again instead of landing in the
+	// previous one (e.g. 2026-03-31 minus 1 month must be 2026-02, not 2026-03).
+	firstOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	prev := firstOfMonth.AddDate(0, -1, 0).Format("2006-01")
 	stats, err := n.Store.MonthlyStats(prev)
 	if err != nil {
 		return err
 	}
-	reasons, _ := n.Store.TopFailureReasons(prev, 5)
-	domains, _ := n.Store.ListDomains()
+	reasons, err := n.Store.TopFailureReasons(prev, 5)
+	if err != nil {
+		slog.Warn("notifier: top failure reasons lookup failed", "month", prev, "err", err)
+	}
+	domains, err := n.Store.ListDomains()
+	if err != nil {
+		slog.Warn("notifier: list domains failed", "err", err)
+	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "doevoe stats for %s\n\nPer domain:\n", prev)

@@ -2,6 +2,7 @@ package notify
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,5 +144,59 @@ func TestMonthlyStats(t *testing.T) {
 	n.StatsTick(aug.Add(time.Hour))
 	if got := systemEmails(t, s); len(got) != 1 {
 		t.Fatal("stats must send once per month")
+	}
+}
+
+func TestMonthlyStatsAcrossMonthBoundary(t *testing.T) {
+	s, n, _ := fixture(t, true)
+
+	if err := s.SetState("last_stats_sent", "2026-07"); err != nil {
+		t.Fatal(err)
+	}
+	tick := time.Date(2026, 8, 31, 9, 0, 0, 0, time.UTC)
+
+	if err := n.StatsTick(tick); err != nil {
+		t.Fatal(err)
+	}
+
+	got := systemEmails(t, s)
+	if len(got) != 1 {
+		t.Fatalf("want 1 stats email, got %d", len(got))
+	}
+	if !strings.Contains(got[0].Subject, "2026-07") && !strings.Contains(got[0].BodyText, "2026-07") {
+		t.Fatalf("want stats for previous month 2026-07, subject=%q body=%q", got[0].Subject, got[0].BodyText)
+	}
+	if v, _ := s.GetState("last_stats_sent"); v != "2026-08" {
+		t.Fatalf("state: %q", v)
+	}
+}
+
+func TestMonthlyStatsHandlesMonthEndOverflow(t *testing.T) {
+	// Regression test for the previous-month calculation bug: naively doing
+	// now.AddDate(0, -1, 0) on a day that doesn't exist in the shorter
+	// previous month (e.g. 2026-03-31 minus 1 month has no Feb 31) overflows
+	// forward and resolves back to "2026-03" instead of "2026-02",
+	// permanently skipping the real previous month. StatsTick must normalize
+	// to the first of the month before subtracting.
+	s, n, _ := fixture(t, true)
+
+	if err := s.SetState("last_stats_sent", "2026-02"); err != nil {
+		t.Fatal(err)
+	}
+	tick := time.Date(2026, 3, 31, 9, 0, 0, 0, time.UTC)
+
+	if err := n.StatsTick(tick); err != nil {
+		t.Fatal(err)
+	}
+
+	got := systemEmails(t, s)
+	if len(got) != 1 {
+		t.Fatalf("want 1 stats email, got %d", len(got))
+	}
+	if !strings.Contains(got[0].Subject, "2026-02") && !strings.Contains(got[0].BodyText, "2026-02") {
+		t.Fatalf("want stats for previous month 2026-02, subject=%q body=%q", got[0].Subject, got[0].BodyText)
+	}
+	if v, _ := s.GetState("last_stats_sent"); v != "2026-03" {
+		t.Fatalf("state: %q", v)
 	}
 }
