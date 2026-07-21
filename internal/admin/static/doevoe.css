@@ -27,6 +27,7 @@ body {
   line-height: 1.55;
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 /* ---- top bar with the airmail stripe ---------------------------------- */
@@ -34,6 +35,7 @@ body {
   position: sticky; top: 0; z-index: 10;
   background: var(--paper);
   border-bottom: 1px solid var(--line);
+  padding-top: env(safe-area-inset-top);
 }
 .topbar::before {
   content: "";
@@ -46,6 +48,8 @@ body {
 .topbar-inner {
   display: flex; align-items: baseline; gap: 1.1rem;
   padding: .7rem 1rem .75rem;
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
   max-width: 52rem; margin: 0 auto;
   overflow-x: auto; white-space: nowrap;
 }

@@ -102,7 +102,7 @@ func TestLayoutIsMobileFirst(t *testing.T) {
 	login(t, srv, c, "hunter2")
 	resp, _ := c.Get(srv.URL + "/admin/emails")
 	body := readBody(t, resp)
-	if !strings.Contains(body, `name="viewport" content="width=device-width, initial-scale=1"`) {
+	if !strings.Contains(body, `name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"`) {
 		t.Error("missing viewport meta")
 	}
 	css, _ := c.Get(srv.URL + "/admin/static/doevoe.css")
