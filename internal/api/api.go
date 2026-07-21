@@ -102,6 +102,14 @@ func (s *Server) postEmail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := delivery.ValidateHeaderValue("From", delivery.FormatAddress(from.Name, from.Address)); err != nil {
+		jsonError(w, 422, "invalid from: "+err.Error())
+		return
+	}
+	if err := delivery.ValidateHeaderValue("To", delivery.FormatAddress(to.Name, to.Address)); err != nil {
+		jsonError(w, 422, "invalid to: "+err.Error())
+		return
+	}
 	for name, value := range req.Headers {
 		if err := delivery.ValidateHeader(name, value); err != nil {
 			jsonError(w, 422, "invalid header: "+err.Error())
@@ -138,7 +146,7 @@ func (s *Server) postEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	id, status, replay, err := enqueueOrReplay(s.Store, &store.Email{
 		APIKeyID: k.ID, DomainID: domain.ID,
-		From: from.Address, To: to.Address, ReplyTo: req.ReplyTo,
+		From: from.Address, To: to.Address, FromName: from.Name, ToName: to.Name, ReplyTo: req.ReplyTo,
 		Subject: req.Subject, BodyHTML: req.HTML, BodyText: req.Text,
 		HeadersJSON: headersJSON, IdempotencyKey: idemKey,
 	})
