@@ -1,5 +1,8 @@
 {{define "content"}}
-<h1>Emails</h1>
+<div class="page-head">
+  <h1>Emails</h1>
+  <a class="refresh" href="{{.CurrentURL}}">&#8635; Refresh</a>
+</div>
 
 <details class="filters" {{if or .Status .Query .From .To .DomainID}}open{{end}}>
   <summary>Filter</summary>

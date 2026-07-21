@@ -224,6 +224,7 @@ func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {
 		"Status": f.Status, "Query": f.Search, "DomainID": domainID,
 		"From": fromDate, "To": toDate,
 		"Page": page, "PrevURL": prevURL, "NextURL": nextURL,
+		"CurrentURL": pageURL(page),
 	})
 }
 

@@ -82,6 +82,12 @@ h2, .section-title {
 a { color: var(--blue); }
 .page-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
 .page-head h1 { margin-bottom: .35rem; }
+.refresh {
+  text-decoration: none; font-weight: 600; font-size: .8rem; color: var(--ink);
+  padding: .35rem .7rem; border: 1px solid var(--line); border-radius: .5rem;
+  background: var(--card); margin-bottom: .35rem;
+}
+.refresh:hover { border-color: var(--ink); }
 .back { margin: 0 0 .25rem; font-size: .85rem; }
 .back a { color: var(--muted); text-decoration: none; }
 .back a:hover { color: var(--ink); }
