@@ -1,5 +1,9 @@
 # doevoe
 
+<p align="center">
+  <img src="docs/images/icon.jpeg" alt="doevoe icon" width="160">
+</p>
+
 doevoe is a self-hosted transactional email API: point your app at it and it
 queues, signs (DKIM), delivers, and retries mail directly to recipient MX
 servers — no third-party ESP, no per-email fee. It ships as a single Go
