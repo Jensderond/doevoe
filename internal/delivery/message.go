@@ -84,7 +84,9 @@ func BuildMessage(e *store.Email, hostname string, now time.Time) (string, error
 	// Validate before building anything: check raw values (pre-encoding for
 	// Subject) so an embedded CRLF can't sneak in via mime-encoding quirks,
 	// and reject custom headers that collide with reserved names or carry
-	// CR/LF, before any of it is written out and DKIM-signed.
+	// CR/LF, before any of it is written out and DKIM-signed. From/To are
+	// validated on the composed header value (FormatAddress output), not the
+	// raw address, since that's what actually gets written and signed.
 	fromHdr := FormatAddress(e.FromName, e.From)
 	toHdr := FormatAddress(e.ToName, e.To)
 	if err := validateHeaderValue("From", fromHdr); err != nil {
