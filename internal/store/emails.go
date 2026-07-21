@@ -8,7 +8,8 @@ import (
 
 type Email struct {
 	ID, APIKeyID, DomainID                   int64
-	From, To, OriginalTo, ReplyTo, Subject   string
+	From, To, FromName, ToName               string
+	OriginalTo, ReplyTo, Subject             string
 	BodyHTML, BodyText, HeadersJSON, Status  string
 	Attempts                                 int
 	NextAttemptAt, LastError, IdempotencyKey string
@@ -16,13 +17,13 @@ type Email struct {
 	CreatedAt, SentAt                        string
 }
 
-const emailCols = `id, COALESCE(api_key_id,0), domain_id, from_addr, to_addr, original_to, reply_to, subject,
+const emailCols = `id, COALESCE(api_key_id,0), domain_id, from_addr, to_addr, from_name, to_name, original_to, reply_to, subject,
  body_html, body_text, headers_json, status, attempts, next_attempt_at, last_error,
  COALESCE(idempotency_key,''), is_system, created_at, sent_at`
 
 func scanEmail(row interface{ Scan(...any) error }) (*Email, error) {
 	e := &Email{}
-	err := row.Scan(&e.ID, &e.APIKeyID, &e.DomainID, &e.From, &e.To, &e.OriginalTo, &e.ReplyTo, &e.Subject,
+	err := row.Scan(&e.ID, &e.APIKeyID, &e.DomainID, &e.From, &e.To, &e.FromName, &e.ToName, &e.OriginalTo, &e.ReplyTo, &e.Subject,
 		&e.BodyHTML, &e.BodyText, &e.HeadersJSON, &e.Status, &e.Attempts, &e.NextAttemptAt, &e.LastError,
 		&e.IdempotencyKey, &e.IsSystem, &e.CreatedAt, &e.SentAt)
 	return e, err
@@ -39,10 +40,10 @@ func (s *Store) EnqueueEmail(e *Email) (int64, error) {
 		e.HeadersJSON = "{}"
 	}
 	res, err := s.db.Exec(`INSERT INTO emails
-		(api_key_id, domain_id, from_addr, to_addr, reply_to, subject, body_html, body_text, headers_json,
+		(api_key_id, domain_id, from_addr, to_addr, from_name, to_name, reply_to, subject, body_html, body_text, headers_json,
 		 status, next_attempt_at, idempotency_key, is_system, created_at)
-		VALUES (NULLIF(?,0),?,?,?,?,?,?,?,?, 'queued', ?, NULLIF(?,''), ?, ?)`,
-		e.APIKeyID, e.DomainID, e.From, e.To, e.ReplyTo, e.Subject, e.BodyHTML, e.BodyText, e.HeadersJSON,
+		VALUES (NULLIF(?,0),?,?,?,?,?,?,?,?,?,?, 'queued', ?, NULLIF(?,''), ?, ?)`,
+		e.APIKeyID, e.DomainID, e.From, e.To, e.FromName, e.ToName, e.ReplyTo, e.Subject, e.BodyHTML, e.BodyText, e.HeadersJSON,
 		e.NextAttemptAt, e.IdempotencyKey, e.IsSystem, e.CreatedAt)
 	if err != nil {
 		return 0, err

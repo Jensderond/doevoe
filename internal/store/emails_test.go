@@ -171,3 +171,20 @@ func TestIdempotency(t *testing.T) {
 		t.Fatalf("idempotency lookup: %+v %v", found, err)
 	}
 }
+
+func TestDisplayNameRoundTrip(t *testing.T) {
+	s := testStore(t)
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id, err := s.EnqueueEmail(&Email{DomainID: d.ID, From: "a@example.com", To: "b@dest.test",
+		FromName: "Atelier Cornelia", ToName: "Jens de Rond", Subject: "hi", BodyText: "yo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := s.GetEmail(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.FromName != "Atelier Cornelia" || e.ToName != "Jens de Rond" {
+		t.Fatalf("names not round-tripped: from=%q to=%q", e.FromName, e.ToName)
+	}
+}

@@ -93,14 +93,26 @@ export async function POST(req: Request) {
 returns the original queued/sent result instead of sending a duplicate
 email, which makes retries on the caller's side safe.
 
-Both `from` and `to` are parsed as a single RFC 5322 address
-(`mail.ParseAddress`) and only the bare address is stored and used — a
-display name in the `"Name <addr>"` form is accepted but currently
-**silently stripped**: doevoe sends (and shows in the admin UI) just
-`addr`, never `Name <addr>`. If you need the recipient/sender name to show
-up in the mail client's From/To header, put it together with the address
-yourself on the caller's side before the display-name support lands, or
-track that as a known v1 limitation (see below).
+`from` and `to` are parsed as RFC 5322 addresses (`mail.ParseAddress`). A
+display name in the `"Name <addr>"` form is **preserved**: doevoe renders the
+`From`/`To` headers as `Name <addr>` (with the name RFC 2047-encoded when it
+isn't plain ASCII), while the bare `addr` is what's used for the SMTP envelope,
+MX routing, and the from-domain check. `from` must be on the domain your API
+key is scoped to.
+
+The JSON body accepts:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `from` | yes | Sender address; its domain must match the API key's domain. `"Name <addr>"` display name preserved. |
+| `to` | yes | Recipient address. `"Name <addr>"` display name preserved. |
+| `subject` | yes | Subject line. |
+| `text` | text or html | Plain-text body. |
+| `html` | text or html | HTML body. Supply **both** `text` and `html` and doevoe builds a `multipart/alternative` message (the deliverability-preferred form); `html` alone sends `text/html`, `text` alone sends `text/plain`. |
+| `reply_to` | no | `Reply-To` header (display name also preserved). |
+| `headers` | no | Extra headers as a `{ "Name": "value" }` object. Headers doevoe sets itself (From, To, Subject, Date, Message-ID, MIME-Version, Content-Type, DKIM-Signature) are reserved and rejected. |
+
+At least one of `text` or `html` is required.
 
 ## Configuration
 

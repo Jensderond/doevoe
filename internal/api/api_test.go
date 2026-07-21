@@ -379,3 +379,29 @@ func TestPostEmailOversizedBodyRejected(t *testing.T) {
 		t.Fatalf("status %d, want 413", resp.StatusCode)
 	}
 }
+
+func TestPostEmailPreservesDisplayName(t *testing.T) {
+	f := setup(t, true)
+	body := `{"from":"Atelier Cornelia <website@example.com>","to":"Jens de Rond <u@dest.test>","subject":"Hi","text":"yo"}`
+	resp := f.post(t, body, f.token, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != 202 {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	e, err := f.store.GetEmail(out.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.FromName != "Atelier Cornelia" || e.ToName != "Jens de Rond" {
+		t.Errorf("names: from=%q to=%q", e.FromName, e.ToName)
+	}
+	if e.From != "website@example.com" || e.To != "u@dest.test" {
+		t.Errorf("routing addrs must be bare: from=%q to=%q", e.From, e.To)
+	}
+}
