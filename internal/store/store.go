@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -36,6 +37,8 @@ CREATE TABLE IF NOT EXISTS emails (
   domain_id INTEGER NOT NULL REFERENCES domains(id),
   from_addr TEXT NOT NULL,
   to_addr TEXT NOT NULL,
+  from_name TEXT NOT NULL DEFAULT '',
+  to_name TEXT NOT NULL DEFAULT '',
   original_to TEXT NOT NULL DEFAULT '',
   reply_to TEXT NOT NULL DEFAULT '',
   subject TEXT NOT NULL,
@@ -87,10 +90,34 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// migrate applies additive, idempotent schema changes for DBs created before a
+// column existed. CREATE TABLE IF NOT EXISTS (in schema, above) never adds
+// columns to an already-existing table, so each additive column needs an ALTER
+// here. On a fresh DB the column already exists (from the schema constant), so
+// the ALTER returns "duplicate column name" — that specific error is expected
+// and ignored. Any other error is fatal. This is the migration pattern for the
+// project: append additive ALTERs; never rewrite or reorder existing ones.
+func migrate(db *sql.DB) error {
+	stmts := []string{
+		`ALTER TABLE emails ADD COLUMN from_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE emails ADD COLUMN to_name TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
+}
 
 func Now() string { return time.Now().UTC().Format(time.RFC3339) }
 
