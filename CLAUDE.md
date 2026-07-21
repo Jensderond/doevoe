@@ -95,9 +95,11 @@ SQLite DB with fake domains/keys/emails for taking admin UI screenshots.
   (403) and on indeterminate DNS checks (skip persisting, keep prior state); notifications are
   fail-open/fail-safe (skip silently if the system domain isn't verified, never blocking the
   underlying operation like key creation).
-- From/To addresses are parsed with `net/mail.ParseAddress` and only the bare address is
-  stored/used — a display name (`"Name <addr>"`) is currently silently stripped (documented
-  v1 limitation in the README, not a bug to "fix" incidentally).
+- From/To addresses are parsed with `net/mail.ParseAddress`; the bare address is used for the
+  SMTP envelope, MX routing, and the from-domain check, while the display name (`"Name <addr>"`)
+  is preserved in the `from_name`/`to_name` columns and rendered into the `From`/`To` headers by
+  `delivery.FormatAddress` (via `net/mail`, RFC 2047-encoded, injection-safe). Never put a
+  display name in `from_addr`/`to_addr` — those are the routing addresses.
 - Every `POST /api/v1/emails` validation happens before the domain/DKIM/queue lookups it's
   cheaper to fail fast on, and specifically before anything that would leave a permanently
   unsendable email sitting in the queue.
