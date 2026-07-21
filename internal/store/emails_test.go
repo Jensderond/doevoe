@@ -107,6 +107,56 @@ func TestRequeueStaleSending(t *testing.T) {
 	}
 }
 
+func TestEnqueueHonorsExplicitCreatedAt(t *testing.T) {
+	s := testStore(t)
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id, err := s.EnqueueEmail(&Email{DomainID: d.ID, From: "a@example.com", To: "u@dest.test",
+		Subject: "s", BodyText: "b", CreatedAt: "2026-05-10T08:00:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, _ := s.GetEmail(id)
+	if e.CreatedAt != "2026-05-10T08:00:00Z" {
+		t.Fatalf("created_at not honored: %q", e.CreatedAt)
+	}
+}
+
+func TestListEmailsDateRange(t *testing.T) {
+	s := testStore(t)
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	for _, ts := range []string{"2026-07-01T10:00:00Z", "2026-07-10T10:00:00Z", "2026-07-20T10:00:00Z"} {
+		if _, err := s.EnqueueEmail(&Email{DomainID: d.ID, From: "a@example.com", To: "u-" + ts[8:10] + "@dest.test",
+			Subject: "s", BodyText: "b", CreatedAt: ts}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.ListEmails(EmailFilter{CreatedFrom: "2026-07-05T00:00:00Z", CreatedTo: "2026-07-15T00:00:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].To != "u-10@dest.test" {
+		t.Fatalf("range filter: want only u-10, got %+v", got)
+	}
+
+	// Boundaries: CreatedFrom is inclusive, CreatedTo is exclusive.
+	got, _ = s.ListEmails(EmailFilter{CreatedFrom: "2026-07-10T10:00:00Z", CreatedTo: "2026-07-20T10:00:00Z"})
+	if len(got) != 1 || got[0].To != "u-10@dest.test" {
+		t.Fatalf("boundary semantics: want only u-10, got %+v", got)
+	}
+
+	// One-sided filters and combination with other filters.
+	if got, _ = s.ListEmails(EmailFilter{CreatedFrom: "2026-07-15T00:00:00Z"}); len(got) != 1 || got[0].To != "u-20@dest.test" {
+		t.Fatalf("from-only: want only u-20, got %+v", got)
+	}
+	if got, _ = s.ListEmails(EmailFilter{CreatedTo: "2026-07-05T00:00:00Z"}); len(got) != 1 || got[0].To != "u-01@dest.test" {
+		t.Fatalf("to-only: want only u-01, got %+v", got)
+	}
+	if got, _ = s.ListEmails(EmailFilter{Status: "sent", CreatedFrom: "2026-07-05T00:00:00Z"}); len(got) != 0 {
+		t.Fatalf("combined with status: want none, got %+v", got)
+	}
+}
+
 func TestIdempotency(t *testing.T) {
 	s := testStore(t)
 	d, _ := s.CreateDomain("example.com", "mail1", "PEM")

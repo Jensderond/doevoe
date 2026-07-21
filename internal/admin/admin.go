@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -145,22 +146,84 @@ func (a *Admin) newSession(w http.ResponseWriter) {
 		Path: "/admin", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 7 * 24 * 3600})
 }
 
+// parseFilterDate parses a YYYY-MM-DD query value into a UTC day start.
+// Unparseable values are treated as unset (ok=false), matching the
+// forgiving handling of the other filters.
+func parseFilterDate(v string) (day time.Time, ok bool) {
+	t, err := time.ParseInLocation("2006-01-02", v, time.UTC)
+	return t, err == nil
+}
+
 func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {
-	domainID, _ := strconv.ParseInt(r.URL.Query().Get("domain"), 10, 64)
+	q := r.URL.Query()
+	domainID, _ := strconv.ParseInt(q.Get("domain"), 10, 64)
 	f := store.EmailFilter{
-		Status:   r.URL.Query().Get("status"),
-		Search:   r.URL.Query().Get("q"),
+		Status:   q.Get("status"),
+		Search:   q.Get("q"),
 		DomainID: domainID,
 	}
+	var fromDate, toDate string
+	if d, ok := parseFilterDate(q.Get("from")); ok {
+		f.CreatedFrom = store.FmtTime(d)
+		fromDate = q.Get("from")
+	}
+	if d, ok := parseFilterDate(q.Get("to")); ok {
+		// CreatedTo is exclusive; bump to the next day so the picked
+		// "to" date itself is included, as a human would expect.
+		f.CreatedTo = store.FmtTime(d.AddDate(0, 0, 1))
+		toDate = q.Get("to")
+	}
+	const pageSize = 50
+	page, _ := strconv.Atoi(q.Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	// Fetch one row beyond the page to learn whether a next page exists,
+	// without a separate COUNT(*) query.
+	f.Limit = pageSize + 1
+	f.Offset = (page - 1) * pageSize
 	emails, err := a.Store.ListEmails(f)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	hasNext := len(emails) > pageSize
+	if hasNext {
+		emails = emails[:pageSize]
+	}
+	pageURL := func(p int) string {
+		v := url.Values{}
+		if f.Status != "" {
+			v.Set("status", f.Status)
+		}
+		if domainID != 0 {
+			v.Set("domain", strconv.FormatInt(domainID, 10))
+		}
+		if f.Search != "" {
+			v.Set("q", f.Search)
+		}
+		if fromDate != "" {
+			v.Set("from", fromDate)
+		}
+		if toDate != "" {
+			v.Set("to", toDate)
+		}
+		v.Set("page", strconv.Itoa(p))
+		return "/admin/emails?" + v.Encode()
+	}
+	var prevURL, nextURL string
+	if page > 1 {
+		prevURL = pageURL(page - 1)
+	}
+	if hasNext {
+		nextURL = pageURL(page + 1)
+	}
 	domains, _ := a.Store.ListDomains()
 	a.render(w, "emails", map[string]any{
 		"Emails": emails, "Domains": domains,
 		"Status": f.Status, "Query": f.Search, "DomainID": domainID,
+		"From": fromDate, "To": toDate,
+		"Page": page, "PrevURL": prevURL, "NextURL": nextURL,
 	})
 }
 

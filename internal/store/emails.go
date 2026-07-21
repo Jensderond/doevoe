@@ -32,6 +32,9 @@ func (s *Store) EnqueueEmail(e *Email) (int64, error) {
 	if e.NextAttemptAt == "" {
 		e.NextAttemptAt = Now()
 	}
+	if e.CreatedAt == "" {
+		e.CreatedAt = Now()
+	}
 	if e.HeadersJSON == "" {
 		e.HeadersJSON = "{}"
 	}
@@ -40,7 +43,7 @@ func (s *Store) EnqueueEmail(e *Email) (int64, error) {
 		 status, next_attempt_at, idempotency_key, is_system, created_at)
 		VALUES (NULLIF(?,0),?,?,?,?,?,?,?,?, 'queued', ?, NULLIF(?,''), ?, ?)`,
 		e.APIKeyID, e.DomainID, e.From, e.To, e.ReplyTo, e.Subject, e.BodyHTML, e.BodyText, e.HeadersJSON,
-		e.NextAttemptAt, e.IdempotencyKey, e.IsSystem, Now())
+		e.NextAttemptAt, e.IdempotencyKey, e.IsSystem, e.CreatedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -127,8 +130,13 @@ type EmailFilter struct {
 	Status   string
 	DomainID int64
 	Search   string
-	Limit    int
-	Offset   int
+	// CreatedFrom/CreatedTo bound created_at as RFC3339 timestamps:
+	// from is inclusive, to is exclusive (pass the day after for a
+	// human-inclusive "to" date). Empty means unbounded.
+	CreatedFrom string
+	CreatedTo   string
+	Limit       int
+	Offset      int
 }
 
 func (s *Store) ListEmails(f EmailFilter) ([]*Email, error) {
@@ -148,6 +156,14 @@ func (s *Store) ListEmails(f EmailFilter) ([]*Email, error) {
 	if f.Search != "" {
 		where = append(where, "(to_addr LIKE ? OR subject LIKE ?)")
 		args = append(args, "%"+f.Search+"%", "%"+f.Search+"%")
+	}
+	if f.CreatedFrom != "" {
+		where = append(where, "created_at>=?")
+		args = append(args, f.CreatedFrom)
+	}
+	if f.CreatedTo != "" {
+		where = append(where, "created_at<?")
+		args = append(args, f.CreatedTo)
 	}
 	q := `SELECT ` + emailCols + ` FROM emails`
 	if len(where) > 0 {

@@ -153,7 +153,9 @@ verified for notifications to actually go out) in these cases:
   check) and re-arms once the rate drops back below threshold.
 - **API key created / revoked** — one email per key lifecycle event.
 - **Monthly stats** — on the first check of a new calendar month, a summary
-  of the previous month: sent/failed counts and delivery rate per domain,
+  of the previous month: sent/failed counts and delivery rate per domain
+  (each with a comparison against the month before and the delivery-rate
+  delta; a domain that went quiet still shows up with its prior numbers),
   top failure reasons, and current SPF/DKIM/DMARC verification status per
   domain. A fresh install does not get a phantom report for its
   (incomplete) install month.
@@ -191,15 +193,6 @@ The image is a static binary (`CGO_ENABLED=0`) on `distroless/static-debian12`
 The following are deliberate cuts for this first version, not oversights —
 listed here so they're a documented decision rather than a surprise:
 
-- **No date-range filter in the admin emails list** — you can filter by
-  status, domain, and a free-text search over recipient/subject, but not by
-  a created/sent date range.
-- **Monthly stats have no previous-month comparison** — the monthly digest
-  reports the previous month's numbers in isolation, with no month-over-month
-  delta or trend.
-- **No pagination UI** — `ListEmails` supports `Limit`/`Offset`, but the
-  admin emails list only ever renders the first page (default limit 50);
-  there's no "next page" control yet.
 - **No CSRF tokens** — admin form-post routes rely solely on the session
   cookie's `SameSite=Lax` attribute for CSRF protection, not an explicit
   per-form token.

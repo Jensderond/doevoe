@@ -182,6 +182,37 @@ func (n *Notifier) RateTick(now time.Time) error {
 	return firstErr
 }
 
+// deliveryRate returns the delivered percentage; ok is false when the
+// domain had no sent/failed activity at all.
+func deliveryRate(st store.DomainStats) (rate float64, ok bool) {
+	total := st.Sent + st.Failed
+	if total == 0 {
+		return 0, false
+	}
+	return float64(st.Sent) / float64(total) * 100, true
+}
+
+func fmtCounts(st store.DomainStats) string {
+	rate, _ := deliveryRate(st)
+	return fmt.Sprintf("%d sent, %d failed (%.1f%% delivered)", st.Sent, st.Failed, rate)
+}
+
+// fmtComparison renders the month-over-month suffix for a domain line,
+// including the delivery-rate delta when both months had activity.
+func fmtComparison(st store.DomainStats, prev map[string]store.DomainStats) string {
+	p, ok := prev[st.DomainName]
+	if !ok {
+		return " — prev month: no activity"
+	}
+	out := " — prev month: " + fmtCounts(p)
+	cur, okCur := deliveryRate(st)
+	old, okOld := deliveryRate(p)
+	if okCur && okOld {
+		out += fmt.Sprintf(", %+.1fpt", cur-old)
+	}
+	return out
+}
+
 func (n *Notifier) StatsTick(now time.Time) error {
 	current := now.Format("2006-01")
 	last, _ := n.Store.GetState("last_stats_sent")
@@ -200,6 +231,18 @@ func (n *Notifier) StatsTick(now time.Time) error {
 	if err != nil {
 		return err
 	}
+	// Month before the reported one, for the month-over-month comparison.
+	// A lookup failure only drops the comparison, not the report.
+	compare := firstOfMonth.AddDate(0, -2, 0).Format("2006-01")
+	prevStats, err := n.Store.MonthlyStats(compare)
+	if err != nil {
+		slog.Warn("notifier: previous-month stats lookup failed", "month", compare, "err", err)
+		prevStats = nil
+	}
+	prevByDomain := map[string]store.DomainStats{}
+	for _, st := range prevStats {
+		prevByDomain[st.DomainName] = st
+	}
 	reasons, err := n.Store.TopFailureReasons(prev, 5)
 	if err != nil {
 		slog.Warn("notifier: top failure reasons lookup failed", "month", prev, "err", err)
@@ -212,14 +255,19 @@ func (n *Notifier) StatsTick(now time.Time) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "doevoe stats for %s\n\nPer domain:\n", prev)
 	for _, st := range stats {
-		total := st.Sent + st.Failed
-		rate := 0.0
-		if total > 0 {
-			rate = float64(st.Sent) / float64(total) * 100
-		}
-		fmt.Fprintf(&b, "- %s: %d sent, %d failed (%.1f%% delivered)\n", st.DomainName, st.Sent, st.Failed, rate)
+		fmt.Fprintf(&b, "- %s: %s%s\n", st.DomainName, fmtCounts(st), fmtComparison(st, prevByDomain))
+		delete(prevByDomain, st.DomainName)
 	}
-	if len(stats) == 0 {
+	// Domains active last month but silent this month: going quiet should
+	// be visible, not make the domain vanish from the report. Iterate
+	// prevStats (sorted by name) rather than the leftover map for
+	// deterministic output.
+	for _, st := range prevStats {
+		if _, ok := prevByDomain[st.DomainName]; ok {
+			fmt.Fprintf(&b, "- %s: no activity — prev month: %s\n", st.DomainName, fmtCounts(st))
+		}
+	}
+	if len(stats) == 0 && len(prevByDomain) == 0 {
 		b.WriteString("- no email activity\n")
 	}
 	if len(reasons) > 0 {

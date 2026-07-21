@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -114,6 +116,112 @@ func TestSearchEmails(t *testing.T) {
 	if strings.Contains(body, "alice@example.com") || strings.Contains(body, "bob@example.com") {
 		t.Errorf("non-matching search should show neither email")
 	}
+}
+
+func TestDateRangeFilter(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	for day, to := range map[string]string{
+		"2026-07-01T10:00:00Z": "early@dest.test",
+		"2026-07-10T10:00:00Z": "mid@dest.test",
+		"2026-07-20T10:00:00Z": "late@dest.test",
+	} {
+		s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: to, Subject: "s", BodyText: "b", CreatedAt: day})
+	}
+
+	resp, _ := c.Get(srv.URL + "/admin/emails?from=2026-07-05&to=2026-07-10")
+	body := readBody(t, resp)
+	if !strings.Contains(body, "mid@dest.test") {
+		t.Errorf("email on the inclusive 'to' day missing:\n%s", body)
+	}
+	if strings.Contains(body, "early@dest.test") || strings.Contains(body, "late@dest.test") {
+		t.Error("emails outside the date range should not be shown")
+	}
+
+	// The submitted values must round-trip into the form inputs.
+	if !strings.Contains(body, `value="2026-07-05"`) || !strings.Contains(body, `value="2026-07-10"`) {
+		t.Error("date inputs should retain the submitted values")
+	}
+
+	// Unparseable dates are ignored rather than erroring.
+	resp, _ = c.Get(srv.URL + "/admin/emails?from=banana&to=2026-13-99")
+	body = readBody(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("invalid dates should be ignored, got status %d", resp.StatusCode)
+	}
+	for _, want := range []string{"early@dest.test", "mid@dest.test", "late@dest.test"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("invalid dates should be treated as unset, missing %s", want)
+		}
+	}
+}
+
+func TestPagination(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	for i := 1; i <= 60; i++ {
+		s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com",
+			To: fmt.Sprintf("u%02d@dest.test", i), Subject: "s", BodyText: "b",
+			CreatedAt: fmt.Sprintf("2026-07-01T10:%02d:00Z", i)})
+	}
+
+	// Page 1 (default): the 50 newest, with a link to the next page.
+	resp, _ := c.Get(srv.URL + "/admin/emails")
+	body := readBody(t, resp)
+	if !strings.Contains(body, "u60@dest.test") || !strings.Contains(body, "u11@dest.test") {
+		t.Error("page 1 should show the 50 newest emails")
+	}
+	if strings.Contains(body, "u10@dest.test") {
+		t.Error("page 1 must not leak page 2 rows")
+	}
+	if !strings.Contains(body, "page=2") {
+		t.Error("page 1 should link to page 2")
+	}
+
+	// Page 2: the remaining 10, with a link back but not forward.
+	resp, _ = c.Get(srv.URL + "/admin/emails?page=2")
+	body = readBody(t, resp)
+	if !strings.Contains(body, "u10@dest.test") || !strings.Contains(body, "u01@dest.test") {
+		t.Error("page 2 should show the remaining emails")
+	}
+	if strings.Contains(body, "u11@dest.test") {
+		t.Error("page 2 must not repeat page 1 rows")
+	}
+	if !strings.Contains(body, "page=1") {
+		t.Error("page 2 should link back to page 1")
+	}
+	if strings.Contains(body, "page=3") {
+		t.Error("page 2 is the last page and must not link to page 3")
+	}
+
+	// Filters are preserved in pagination links.
+	resp, _ = c.Get(srv.URL + "/admin/emails?status=queued&q=dest")
+	body = readBody(t, resp)
+	older := regexpMustFind(t, body, `href="[^"]*page=2[^"]*"`)
+	if !strings.Contains(older, "status=queued") || !strings.Contains(older, "q=dest") {
+		t.Errorf("pagination link should preserve filters, got %s", older)
+	}
+
+	// Out-of-range and invalid pages degrade gracefully.
+	resp, _ = c.Get(srv.URL + "/admin/emails?page=99")
+	if body = readBody(t, resp); !strings.Contains(body, "No emails match") {
+		t.Error("out-of-range page should render the empty state")
+	}
+	resp, _ = c.Get(srv.URL + "/admin/emails?page=banana")
+	if body = readBody(t, resp); resp.StatusCode != 200 || !strings.Contains(body, "u60@dest.test") {
+		t.Error("invalid page should fall back to page 1")
+	}
+}
+
+func regexpMustFind(t *testing.T, body, pattern string) string {
+	t.Helper()
+	m := regexp.MustCompile(pattern).FindString(body)
+	if m == "" {
+		t.Fatalf("no match for %s in body:\n%s", pattern, body)
+	}
+	return m
 }
 
 func TestPlainRetryUnchangedRecipient(t *testing.T) {

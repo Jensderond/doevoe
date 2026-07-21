@@ -243,6 +243,88 @@ func TestMonthlyStats(t *testing.T) {
 	}
 }
 
+// emailInMonth creates an email with created_at inside the given month and
+// marks it sent or failed.
+func emailInMonth(t *testing.T, s *store.Store, domainID int64, month string, sent bool) {
+	t.Helper()
+	id, err := s.EnqueueEmail(&store.Email{DomainID: domainID, From: "a@client.example",
+		To: "u@dest.test", Subject: "s", BodyText: "b", CreatedAt: month + "-15T12:00:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent {
+		s.MarkSent(id, month+"-15T12:00:01Z")
+	} else {
+		s.MarkFailed(id, "550 no such user")
+	}
+}
+
+func TestMonthlyStatsComparesToPreviousMonth(t *testing.T) {
+	s, n, clientID := fixture(t, true)
+	s.SetState("last_stats_sent", "2026-07")
+
+	// June: 1 sent, 1 failed (50%). July: 2 sent, 0 failed (100%).
+	emailInMonth(t, s, clientID, "2026-06", true)
+	emailInMonth(t, s, clientID, "2026-06", false)
+	emailInMonth(t, s, clientID, "2026-07", true)
+	emailInMonth(t, s, clientID, "2026-07", true)
+
+	if err := n.StatsTick(time.Date(2026, 8, 1, 0, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	got := systemEmails(t, s)
+	if len(got) != 1 {
+		t.Fatalf("want 1 stats email, got %d", len(got))
+	}
+	body := got[0].BodyText
+	for _, want := range []string{
+		"2 sent, 0 failed (100.0% delivered)",
+		"prev month: 1 sent, 1 failed (50.0% delivered)",
+		"+50.0pt",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("stats body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestMonthlyStatsComparisonNoPriorActivity(t *testing.T) {
+	s, n, clientID := fixture(t, true)
+	s.SetState("last_stats_sent", "2026-07")
+	emailInMonth(t, s, clientID, "2026-07", true)
+
+	if err := n.StatsTick(time.Date(2026, 8, 1, 0, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	got := systemEmails(t, s)
+	if len(got) != 1 {
+		t.Fatalf("want 1 stats email, got %d", len(got))
+	}
+	if !strings.Contains(got[0].BodyText, "prev month: no activity") {
+		t.Errorf("stats body should note missing prior activity:\n%s", got[0].BodyText)
+	}
+}
+
+func TestMonthlyStatsComparisonDomainWentQuiet(t *testing.T) {
+	s, n, clientID := fixture(t, true)
+	s.SetState("last_stats_sent", "2026-07")
+	// Activity in June only; nothing in July.
+	emailInMonth(t, s, clientID, "2026-06", true)
+
+	if err := n.StatsTick(time.Date(2026, 8, 1, 0, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	got := systemEmails(t, s)
+	if len(got) != 1 {
+		t.Fatalf("want 1 stats email, got %d", len(got))
+	}
+	body := got[0].BodyText
+	if !strings.Contains(body, "client.example: no activity") ||
+		!strings.Contains(body, "prev month: 1 sent, 0 failed (100.0% delivered)") {
+		t.Errorf("domain that went quiet should still appear with its prior numbers:\n%s", body)
+	}
+}
+
 func TestMonthlyStatsAcrossMonthBoundary(t *testing.T) {
 	s, n, _ := fixture(t, true)
 
