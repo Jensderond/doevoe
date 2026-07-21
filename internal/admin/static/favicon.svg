@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>
+    .bg  { fill: #f5f4ef; }
+    .ink { fill: #1d2530; }
+    .red { fill: #b8382e; }
+    @media (prefers-color-scheme: dark) {
+      .bg  { fill: #0f141d; }
+      .ink { fill: #e7eaf0; }
+      .red { fill: #e4695f; }
+    }
+  </style>
+  <rect width="64" height="64" rx="14" class="bg"/>
+  <text x="32" y="43" text-anchor="middle"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-weight="700" font-size="32" letter-spacing="-1">
+    <tspan class="ink">D</tspan><tspan class="red">_</tspan>
+  </text>
+</svg>
