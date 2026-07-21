@@ -20,15 +20,15 @@
   <div class="topbar-inner">
     <a class="wordmark" href="/admin/emails">doevoe</a>
     <nav>
-      <a href="/admin/emails">Emails</a>
-      <a href="/admin/domains">Domains</a>
-      <a href="/admin/keys">API keys</a>
+      <a href="/admin/emails"{{if eq .Nav "emails"}} class="active" aria-current="page"{{end}}>Emails</a>
+      <a href="/admin/domains"{{if eq .Nav "domains"}} class="active" aria-current="page"{{end}}>Domains</a>
+      <a href="/admin/keys"{{if eq .Nav "keys"}} class="active" aria-current="page"{{end}}>API keys</a>
     </nav>
     <form method="post" action="/admin/logout"><button class="link">Log out</button></form>
   </div>
 </header>
 <main class="container">
-{{template "content" .}}
+{{template "content" .Data}}
 </main>
 </body>
 </html>{{end}}

@@ -118,6 +118,15 @@ func (a *Admin) auth(h http.HandlerFunc) http.Handler {
 	})
 }
 
+// navSection maps a rendered page name to the topbar nav item it should
+// highlight as active (detail pages like "email"/"domain" highlight their
+// parent list page).
+var navSection = map[string]string{
+	"emails": "emails", "email": "emails",
+	"domains": "domains", "domain": "domains",
+	"keys": "keys",
+}
+
 func (a *Admin) renderStatus(w http.ResponseWriter, status int, page string, data any) {
 	tpl, err := template.ParseFS(assets, "templates/layout.html", "templates/"+page+".html")
 	if err != nil {
@@ -126,7 +135,11 @@ func (a *Admin) renderStatus(w http.ResponseWriter, status int, page string, dat
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	if err := tpl.ExecuteTemplate(w, "layout", data); err != nil {
+	view := struct {
+		Nav  string
+		Data any
+	}{Nav: navSection[page], Data: data}
+	if err := tpl.ExecuteTemplate(w, "layout", view); err != nil {
 		http.Error(w, err.Error(), 500)
 	}
 }
