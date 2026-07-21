@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"mime"
+	"net/mail"
 	"sort"
 	"strings"
 	"time"
@@ -84,10 +85,12 @@ func BuildMessage(e *store.Email, hostname string, now time.Time) (string, error
 	// Subject) so an embedded CRLF can't sneak in via mime-encoding quirks,
 	// and reject custom headers that collide with reserved names or carry
 	// CR/LF, before any of it is written out and DKIM-signed.
-	if err := validateHeaderValue("From", e.From); err != nil {
+	fromHdr := FormatAddress(e.FromName, e.From)
+	toHdr := FormatAddress(e.ToName, e.To)
+	if err := validateHeaderValue("From", fromHdr); err != nil {
 		return "", err
 	}
-	if err := validateHeaderValue("To", e.To); err != nil {
+	if err := validateHeaderValue("To", toHdr); err != nil {
 		return "", err
 	}
 	if e.ReplyTo != "" {
@@ -123,8 +126,8 @@ func BuildMessage(e *store.Email, hostname string, now time.Time) (string, error
 	var b strings.Builder
 	write := func(k, v string) { fmt.Fprintf(&b, "%s: %s\r\n", k, v) }
 
-	write("From", e.From)
-	write("To", e.To)
+	write("From", fromHdr)
+	write("To", toHdr)
 	if e.ReplyTo != "" {
 		write("Reply-To", e.ReplyTo)
 	}
@@ -160,6 +163,18 @@ func BuildMessage(e *store.Email, hostname string, now time.Time) (string, error
 
 func crlf(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", "\r\n")
+}
+
+// FormatAddress renders an address for a From/To header. With a display name it
+// returns the RFC 5322 "Name <addr>" form via net/mail, which RFC 2047-encodes
+// non-ASCII names, quotes specials, and never emits raw CR/LF (so it is
+// injection-safe by construction). With an empty name it returns the bare
+// address unchanged, preserving the pre-display-name behavior.
+func FormatAddress(name, addr string) string {
+	if name == "" {
+		return addr
+	}
+	return (&mail.Address{Name: name, Address: addr}).String()
 }
 
 func randHex(n int) string {

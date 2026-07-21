@@ -58,6 +58,47 @@ func TestBuildMessageRejectsReservedCustomHeader(t *testing.T) {
 	}
 }
 
+func TestBuildMessageDisplayName(t *testing.T) {
+	e := &store.Email{From: "website@ateliercornelia.nl", FromName: "Atelier Cornelia",
+		To: "jens@dest.test", ToName: "Jens de Rond", Subject: "Hi", BodyText: "yo", HeadersJSON: "{}"}
+	msg, err := BuildMessage(e, "mail.example.com", testTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Atelier Cornelia", "<website@ateliercornelia.nl>", "Jens de Rond", "<jens@dest.test>"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message missing %q\n%s", want, msg)
+		}
+	}
+}
+
+func TestBuildMessageEncodesNonASCIIName(t *testing.T) {
+	e := &store.Email{From: "a@example.com", FromName: "Café Cornelia",
+		To: "b@dest.test", Subject: "Hi", BodyText: "yo", HeadersJSON: "{}"}
+	msg, err := BuildMessage(e, "mail.example.com", testTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(msg, "Café") {
+		t.Error("non-ASCII name must be RFC 2047-encoded, found raw UTF-8")
+	}
+	if !strings.Contains(msg, "=?utf-8?") {
+		t.Errorf("expected RFC 2047 encoded-word in From header\n%s", msg)
+	}
+}
+
+func TestBuildMessageNeutralizesCRLFInName(t *testing.T) {
+	e := &store.Email{From: "a@example.com", FromName: "Evil\r\nBcc: x@y.com",
+		To: "b@dest.test", Subject: "Hi", BodyText: "yo", HeadersJSON: "{}"}
+	msg, err := BuildMessage(e, "mail.example.com", testTime)
+	if err != nil {
+		return // rejecting the injection is an acceptable outcome
+	}
+	if strings.Contains(msg, "\r\nBcc: x@y.com") {
+		t.Error("CRLF in display name leaked an injected header")
+	}
+}
+
 func TestSignMessageVerifies(t *testing.T) {
 	priv, _, err := dkimkeys.Generate()
 	if err != nil {
