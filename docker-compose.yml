@@ -1,5 +1,9 @@
 services:
   doevoe:
+    # `docker compose build` still builds locally; on a server you can skip
+    # the build and `docker compose pull` this image instead (requires
+    # `docker login ghcr.io` with a read:packages token, since it's private).
+    image: ghcr.io/jensderond/doevoe:latest
     build: .
     restart: unless-stopped
     ports:
