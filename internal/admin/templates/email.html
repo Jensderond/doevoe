@@ -1,38 +1,46 @@
 {{define "content"}}
-<p><a href="/admin/emails">← Emails</a></p>
-<h1>Email #{{.Email.ID}} <span class="badge {{.Email.Status}}">{{.Email.Status}}</span></h1>
-
-<div class="card">
-  <div class="meta">
-    <span>From: {{.Email.From}}</span>
-    <span>To: {{if .Email.OriginalTo}}<del>{{.Email.OriginalTo}}</del> {{end}}{{.Email.To}}</span>
-    <span>Domain: {{.Domain.Name}}</span>
-    <span>Created: {{.Email.CreatedAt}}</span>
-    {{with .Email.SentAt}}<span>Sent: {{.}}</span>{{end}}
-    {{with .Email.LastError}}<span class="error">Last error: {{.}}</span>{{end}}
-  </div>
-  <h2>{{.Email.Subject}}</h2>
-  {{with .Email.BodyText}}<pre class="dns-record">{{.}}</pre>{{end}}
+<p class="back"><a href="/admin/emails">&larr; Emails</a></p>
+<div class="page-head">
+  <h1>Email #{{.Email.ID}}</h1>
+  <span class="chip {{.Email.Status}}">{{.Email.Status}}</span>
 </div>
 
+<section class="card">
+  <dl class="fields">
+    <div><dt>From</dt><dd>{{.Email.From}}</dd></div>
+    <div><dt>To</dt><dd>{{if .Email.OriginalTo}}<del>{{.Email.OriginalTo}}</del> {{end}}{{.Email.To}}</dd></div>
+    <div><dt>Domain</dt><dd>{{.Domain.Name}}</dd></div>
+    <div><dt>Created</dt><dd>{{.Email.CreatedAt}}</dd></div>
+    {{with .Email.SentAt}}<div><dt>Sent</dt><dd>{{.}}</dd></div>{{end}}
+    {{with .Email.LastError}}<div class="is-error"><dt>Last error</dt><dd>{{.}}</dd></div>{{end}}
+  </dl>
+  <h2 class="subject-line">{{.Email.Subject}}</h2>
+  {{with .Email.BodyText}}<pre class="mono-block">{{.}}</pre>{{end}}
+</section>
+
 {{if eq .Email.Status "failed"}}
+<h2 class="section-title">Retry</h2>
 <form method="post" action="/admin/emails/{{.Email.ID}}/retry" class="card">
-  <h2>Retry</h2>
   <label>Recipient (edit to fix a typo, leave as-is to retry unchanged)
     <input name="to" value="{{.Email.To}}">
   </label>
-  <div class="actions"><button type="submit">Retry now</button></div>
+  <div class="actions"><button type="submit" class="primary">Retry now</button></div>
 </form>
 {{end}}
 
-<h2>Delivery attempts</h2>
+<h2 class="section-title">Delivery attempts</h2>
+<div class="list">
 {{range .Attempts}}
-<div class="card meta">
-  <span>#{{.AttemptNo}} — {{.CreatedAt}}</span>
-  <span>MX: {{.MXHost}} ({{.DurationMs}}ms)</span>
-  <span>{{if .SMTPCode}}{{.SMTPCode}} {{end}}{{.Response}}</span>
+<div class="attempt">
+  <div class="row-meta">
+    <span>#{{.AttemptNo}}</span>
+    <span>{{.CreatedAt}}</span>
+    <span>{{.MXHost}} &middot; {{.DurationMs}}ms</span>
+  </div>
+  <div class="attempt-resp {{if ge .SMTPCode 500}}bad{{else if ge .SMTPCode 400}}warn{{else if .SMTPCode}}good{{end}}">{{if .SMTPCode}}{{.SMTPCode}} {{end}}{{.Response}}</div>
 </div>
 {{else}}
-<p>No attempts yet.</p>
+<p class="empty">No attempts yet.</p>
 {{end}}
+</div>
 {{end}}

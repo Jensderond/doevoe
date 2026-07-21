@@ -1,18 +1,24 @@
 {{define "content"}}
 <h1>Domains</h1>
+
 <form method="post" action="/admin/domains" class="card">
   <label>Add sending domain <input name="name" placeholder="client.example" required></label>
-  <div class="actions"><button type="submit">Add domain</button></div>
+  <div class="actions"><button type="submit" class="primary">Add domain</button></div>
 </form>
+
+<div class="list">
 {{range .Domains}}
-<a class="card" href="/admin/domains/{{.ID}}">
-  <strong>{{.Name}}</strong>
-  {{if .Verified}}<span class="badge sent">verified</span>{{else}}<span class="badge failed">setup needed</span>{{end}}
-  <div class="meta">
-    <span>SPF {{if .SPFVerified}}✓{{else}}✗{{end}}</span>
-    <span>DKIM {{if .DKIMVerified}}✓{{else}}✗{{end}}</span>
-    <span>DMARC {{if .DMARCVerified}}✓{{else}}✗{{end}}</span>
+<a class="row" href="/admin/domains/{{.ID}}">
+  <div class="row-top">
+    <span class="domain-name">{{.Name}}</span>
+    {{if .Verified}}<span class="chip sent">verified</span>{{else}}<span class="chip failed">setup needed</span>{{end}}
+  </div>
+  <div class="checks">
+    <span class="{{if .SPFVerified}}ok{{else}}error{{end}}">SPF {{if .SPFVerified}}&#10003;{{else}}&#10007;{{end}}</span>
+    <span class="{{if .DKIMVerified}}ok{{else}}error{{end}}">DKIM {{if .DKIMVerified}}&#10003;{{else}}&#10007;{{end}}</span>
+    <span class="{{if .DMARCVerified}}ok{{else}}error{{end}}">DMARC {{if .DMARCVerified}}&#10003;{{else}}&#10007;{{end}}</span>
   </div>
 </a>
 {{end}}
+</div>
 {{end}}

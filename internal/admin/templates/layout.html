@@ -7,13 +7,17 @@
 <link rel="stylesheet" href="/admin/static/doevoe.css">
 </head>
 <body>
-<nav>
-  <strong>doevoe</strong>
-  <a href="/admin/emails">Emails</a>
-  <a href="/admin/domains">Domains</a>
-  <a href="/admin/keys">API keys</a>
-  <form method="post" action="/admin/logout"><button class="link">Log out</button></form>
-</nav>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="wordmark" href="/admin/emails">doevoe</a>
+    <nav>
+      <a href="/admin/emails">Emails</a>
+      <a href="/admin/domains">Domains</a>
+      <a href="/admin/keys">API keys</a>
+    </nav>
+    <form method="post" action="/admin/logout"><button class="link">Log out</button></form>
+  </div>
+</header>
 <main class="container">
 {{template "content" .}}
 </main>

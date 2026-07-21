@@ -1,26 +1,29 @@
 {{define "content"}}
-<p><a href="/admin/domains">← Domains</a></p>
-<h1>{{.Domain.Name}}
-  {{if .Domain.Verified}}<span class="badge sent">verified</span>
-  {{else}}<span class="badge failed">setup needed</span>{{end}}
-</h1>
-<p>Add these DNS records for <strong>{{.Domain.Name}}</strong>, then press Verify.
+<p class="back"><a href="/admin/domains">&larr; Domains</a></p>
+<div class="page-head">
+  <h1>{{.Domain.Name}}</h1>
+  {{if .Domain.Verified}}<span class="chip sent">verified</span>
+  {{else}}<span class="chip failed">setup needed</span>{{end}}
+</div>
+<p class="lede">Add these DNS records for <strong>{{.Domain.Name}}</strong>, then press Verify.
    Sending is blocked until all three are verified.</p>
 
 {{range .Records}}
 <div class="card">
-  <strong>{{.Type}}</strong>
-  {{if eq .Type "TXT (SPF)"}}{{if $.Domain.SPFVerified}}<span class="ok">✓ verified</span>{{else}}<span class="error">✗ not found</span>{{end}}{{end}}
-  {{if eq .Type "TXT (DKIM)"}}{{if $.Domain.DKIMVerified}}<span class="ok">✓ verified</span>{{else}}<span class="error">✗ not found</span>{{end}}{{end}}
-  {{if eq .Type "TXT (DMARC)"}}{{if $.Domain.DMARCVerified}}<span class="ok">✓ verified</span>{{else}}<span class="error">✗ not found</span>{{end}}{{end}}
-  <div class="meta"><span>Host: <code>{{.Host}}</code></span></div>
+  <div class="row-top">
+    <span class="domain-name">{{.Type}}</span>
+    {{if eq .Type "TXT (SPF)"}}{{if $.Domain.SPFVerified}}<span class="chip sent">verified</span>{{else}}<span class="chip failed">not found</span>{{end}}{{end}}
+    {{if eq .Type "TXT (DKIM)"}}{{if $.Domain.DKIMVerified}}<span class="chip sent">verified</span>{{else}}<span class="chip failed">not found</span>{{end}}{{end}}
+    {{if eq .Type "TXT (DMARC)"}}{{if $.Domain.DMARCVerified}}<span class="chip sent">verified</span>{{else}}<span class="chip failed">not found</span>{{end}}{{end}}
+  </div>
+  <div class="row-meta"><span>Host: <code>{{.Host}}</code></span></div>
   {{with .Value}}<div class="dns-record">{{.}}</div>{{end}}
-  {{with .Note}}<p>{{.}}</p>{{end}}
+  {{with .Note}}<p class="lede">{{.}}</p>{{end}}
 </div>
 {{end}}
 
 <form method="post" action="/admin/domains/{{.Domain.ID}}/verify" class="actions">
-  <button type="submit">Verify DNS records</button>
+  <button type="submit" class="primary">Verify DNS records</button>
 </form>
-{{with .Domain.LastCheckedAt}}<p class="meta">Last checked: {{.}}</p>{{end}}
+{{with .Domain.LastCheckedAt}}<p class="row-meta">Last checked: {{.}}</p>{{end}}
 {{end}}

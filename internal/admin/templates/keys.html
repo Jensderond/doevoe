@@ -1,11 +1,13 @@
 {{define "content"}}
 <h1>API keys</h1>
+
 {{with .NewToken}}
-<div class="card">
-  <strong>New key created — copy it now, it will not be shown again:</strong>
+<div class="card token-callout">
+  <strong>New key created &mdash; copy it now, it will not be shown again:</strong>
   <div class="dns-record">{{.}}</div>
 </div>
 {{end}}
+
 <form method="post" action="/admin/keys" class="card">
   <label>Name <input name="name" placeholder="site-a production" required></label>
   <label>Domain
@@ -13,13 +15,18 @@
       {{range .Domains}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
     </select>
   </label>
-  <div class="actions"><button type="submit">Create key</button></div>
+  <div class="actions"><button type="submit" class="primary">Create key</button></div>
 </form>
+
+<div class="list">
 {{range .Keys}}
-<div class="card">
-  <strong>{{.Name}}</strong> — {{index $.DomainNames .DomainID}}
-  {{if .Revoked}}<span class="badge failed">revoked</span>{{end}}
-  <div class="meta">
+<div class="row">
+  <div class="row-top">
+    <span class="domain-name">{{.Name}}</span>
+    {{if .Revoked}}<span class="chip failed">revoked</span>{{end}}
+  </div>
+  <div class="row-meta">
+    <span>{{index $.DomainNames .DomainID}}</span>
     <span>Created {{.CreatedAt}}</span>
     {{with .LastUsedAt}}<span>Last used {{.}}</span>{{end}}
   </div>
@@ -30,4 +37,5 @@
   {{end}}
 </div>
 {{end}}
+</div>
 {{end}}

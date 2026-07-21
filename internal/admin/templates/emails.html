@@ -1,46 +1,57 @@
 {{define "content"}}
 <h1>Emails</h1>
-<form method="get" action="/admin/emails" class="filters">
-  <label>Status
-    <select name="status">
-      <option value="">All</option>
-      <option value="queued" {{if eq $.Status "queued"}}selected{{end}}>queued</option>
-      <option value="sending" {{if eq $.Status "sending"}}selected{{end}}>sending</option>
-      <option value="sent" {{if eq $.Status "sent"}}selected{{end}}>sent</option>
-      <option value="failed" {{if eq $.Status "failed"}}selected{{end}}>failed</option>
-    </select>
-  </label>
-  <label>Domain
-    <select name="domain">
-      <option value="0">All</option>
-      {{range .Domains}}<option value="{{.ID}}" {{if eq $.DomainID .ID}}selected{{end}}>{{.Name}}</option>{{end}}
-    </select>
-  </label>
-  <label>Search <input type="search" name="q" value="{{.Query}}" placeholder="recipient or subject"></label>
-  <label>From <input type="date" name="from" value="{{.From}}"></label>
-  <label>To <input type="date" name="to" value="{{.To}}"></label>
-  <button type="submit">Filter</button>
-</form>
 
+<details class="filters" {{if or .Status .Query .From .To .DomainID}}open{{end}}>
+  <summary>Filter</summary>
+  <form method="get" action="/admin/emails">
+    <label>Status
+      <select name="status">
+        <option value="">All</option>
+        <option value="queued" {{if eq $.Status "queued"}}selected{{end}}>queued</option>
+        <option value="sending" {{if eq $.Status "sending"}}selected{{end}}>sending</option>
+        <option value="sent" {{if eq $.Status "sent"}}selected{{end}}>sent</option>
+        <option value="failed" {{if eq $.Status "failed"}}selected{{end}}>failed</option>
+      </select>
+    </label>
+    <label>Domain
+      <select name="domain">
+        <option value="0">All</option>
+        {{range .Domains}}<option value="{{.ID}}" {{if eq $.DomainID .ID}}selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+    </label>
+    <label class="wide">Search
+      <input type="search" name="q" value="{{.Query}}" placeholder="recipient or subject">
+    </label>
+    <label>From <input type="date" name="from" value="{{.From}}"></label>
+    <label>To <input type="date" name="to" value="{{.To}}"></label>
+    <button type="submit" class="primary">Apply filters</button>
+  </form>
+</details>
+
+<div class="list">
 {{range .Emails}}
-<a class="card" href="/admin/emails/{{.ID}}">
-  <span class="badge {{.Status}}">{{.Status}}</span>
-  <strong>{{.To}}</strong> — {{.Subject}}
-  <div class="meta">
+<a class="row" href="/admin/emails/{{.ID}}">
+  <div class="row-top">
+    <span class="chip {{.Status}}">{{.Status}}</span>
+    <span class="addr">{{.To}}</span>
+  </div>
+  <div class="subject">{{.Subject}}</div>
+  <div class="row-meta">
     <span>{{.CreatedAt}}</span>
     <span>{{.Attempts}} attempt(s)</span>
-    {{with .LastError}}<span class="error">{{.}}</span>{{end}}
   </div>
+  {{with .LastError}}<div class="row-err">{{.}}</div>{{end}}
 </a>
 {{else}}
-<p>No emails match.</p>
+<p class="empty">No emails match.</p>
 {{end}}
+</div>
 
 {{if or .PrevURL .NextURL}}
 <nav class="pagination">
-  {{with .PrevURL}}<a href="{{.}}">&larr; Newer</a>{{end}}
+  {{if .PrevURL}}<a href="{{.PrevURL}}">&larr; Newer</a>{{else}}<span></span>{{end}}
   <span>Page {{.Page}}</span>
-  {{with .NextURL}}<a href="{{.}}">Older &rarr;</a>{{end}}
+  {{if .NextURL}}<a href="{{.NextURL}}">Older &rarr;</a>{{else}}<span></span>{{end}}
 </nav>
 {{end}}
 {{end}}
