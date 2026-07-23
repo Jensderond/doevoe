@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -22,7 +23,6 @@ import (
 	"doevoe/internal/dkimkeys"
 	"doevoe/internal/dnscheck"
 	"doevoe/internal/store"
-	"doevoe/internal/svgchart"
 )
 
 //go:embed templates/*.html static/*
@@ -182,6 +182,32 @@ func parseFilterDate(v string) (day time.Time, ok bool) {
 	return t, err == nil
 }
 
+// dashboardData is embedded as JSON in the dashboard page (the
+// #dashboard-data script tag) for static/charts.js to render client-side.
+type dashboardData struct {
+	RangeDays int           `json:"rangeDays"`
+	Daily     []chartDay    `json:"daily"`   // gap-filled, oldest→newest
+	Domains   []chartDomain `json:"domains"` // sorted by sent+failed desc
+	Reasons   []chartReason `json:"reasons"` // most frequent first
+}
+
+type chartDay struct {
+	Date   string `json:"date"` // YYYY-MM-DD (UTC)
+	Sent   int    `json:"sent"`
+	Failed int    `json:"failed"`
+}
+
+type chartDomain struct {
+	Name   string `json:"name"`
+	Sent   int    `json:"sent"`
+	Failed int    `json:"failed"`
+}
+
+type chartReason struct {
+	Reason string `json:"reason"`
+	Count  int    `json:"count"`
+}
+
 func (a *Admin) dashboard(w http.ResponseWriter, r *http.Request) {
 	days := 30
 	switch r.URL.Query().Get("range") {
@@ -210,30 +236,40 @@ func (a *Admin) dashboard(w http.ResponseWriter, r *http.Request) {
 	for _, d := range daily {
 		byDay[d.Date] = d
 	}
-	bars := make([]svgchart.DayBar, 0, days)
+	data := dashboardData{
+		RangeDays: days,
+		Daily:     make([]chartDay, 0, days),
+		Domains:   make([]chartDomain, 0, len(domainStats)),
+		Reasons:   make([]chartReason, 0, len(reasons)),
+	}
 	for i := 0; i < days; i++ {
-		day := startDay.AddDate(0, 0, i)
-		dc := byDay[day.Format("2006-01-02")]
-		bars = append(bars, svgchart.DayBar{Label: day.Format("01-02"), Sent: dc.Sent, Failed: dc.Failed})
+		date := startDay.AddDate(0, 0, i).Format("2006-01-02")
+		dc := byDay[date]
+		data.Daily = append(data.Daily, chartDay{Date: date, Sent: dc.Sent, Failed: dc.Failed})
 	}
-
-	domainBars := make([]svgchart.HBar, 0, len(domainStats))
 	for _, d := range domainStats {
-		domainBars = append(domainBars, svgchart.HBar{Label: d.DomainName, Value: d.Sent + d.Failed})
+		data.Domains = append(data.Domains, chartDomain{Name: d.DomainName, Sent: d.Sent, Failed: d.Failed})
 	}
-	sort.Slice(domainBars, func(i, j int) bool { return domainBars[i].Value > domainBars[j].Value })
-
-	reasonBars := make([]svgchart.HBar, 0, len(reasons))
+	sort.SliceStable(data.Domains, func(i, j int) bool {
+		return data.Domains[i].Sent+data.Domains[i].Failed > data.Domains[j].Sent+data.Domains[j].Failed
+	})
 	for _, rc := range reasons {
-		reasonBars = append(reasonBars, svgchart.HBar{Label: rc.Reason, Value: rc.Count})
+		data.Reasons = append(data.Reasons, chartReason{Reason: rc.Reason, Count: rc.Count})
+	}
+
+	// json.Marshal escapes <, > and & by default, so a reason string can never
+	// smuggle "</script>" into the page; template.JS then keeps html/template
+	// from re-escaping the JSON inside the script tag.
+	blob, err := json.Marshal(data)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
 
 	a.render(w, r, "dashboard", map[string]any{
-		"Days":        days,
-		"Summary":     summary,
-		"VolumeChart": svgchart.StackedBars(bars),
-		"DomainChart": svgchart.HBars(domainBars),
-		"ReasonChart": svgchart.HBars(reasonBars),
+		"Days":     days,
+		"Summary":  summary,
+		"DataJSON": template.JS(blob),
 	})
 }
 
