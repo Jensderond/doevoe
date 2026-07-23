@@ -145,3 +145,40 @@ A new pure package. Input = numbers, output = `template.HTML` SVG string. No dep
 - All four graphs included: volume over time, delivery success, volume by domain,
   top failure reasons.
 - "Overview" becomes the landing page; 7/30/90 presets rather than a date picker.
+
+## Addendum (2026-07-23): charts moved to a client-side ES module
+
+The server-rendered `internal/svgchart` package described above is retired. Its
+main trade-off — no real axes and only native `<title>` tooltips — turned out to
+matter in practice, so the charts are now drawn client-side by
+`internal/admin/static/charts.js`, a plain, dependency-free ES module (no npm,
+no bundler, no CDN — the buildless single-binary model is unchanged; the file is
+picked up by the existing `//go:embed static/*` and loaded once from
+`layout.html` with `<script type="module">`, outside `#shell` so htmx swaps
+never unload it).
+
+What changed:
+
+- The `dashboard` handler now embeds the range's stats as JSON in a
+  `<script id="dashboard-data" type="application/json">` tag
+  (`dashboardData` in `admin.go`: `rangeDays`, gap-filled `daily`, `domains`
+  sorted by volume desc, `reasons` desc). `json.Marshal`'s default HTML escaping
+  keeps a failure-reason string from smuggling `</script>` into the page;
+  `template.JS` stops html/template from re-escaping the JSON.
+- `charts.js` renders three SVGs with real X/Y axes: nice-number integer ticks,
+  faint `var(--line)` gridlines, thinned date labels (~7 max, never one per day
+  at 90d), a slightly stronger zero baseline, and a shared cursor-following
+  tooltip (`.chart-tip`). Colors are exclusively the theme custom properties
+  (`--green`/`--red`/`--blue`/`--line`/`--muted`), so light/dark theming stays
+  automatic. Re-rendering hooks `htmx:afterSettle` (range toggle swaps `#shell`)
+  and a debounced window resize.
+- KPI tiles remain server-rendered; with JS off the page still shows the
+  numbers, and each chart container simply stays empty.
+- Empty ranges render a "No data for this range." message per chart, matching
+  the old placeholder behavior.
+- `internal/svgchart` (package + tests) is deleted; the dashboard test suite
+  instead asserts the embedded JSON parses and carries the expected counts.
+
+Why buildless was kept: the whole point of doevoe is one Go binary with zero
+build steps, and the charts need only ~350 lines of vanilla DOM/SVG code — a
+charting library (and the toolchain it drags in) buys nothing here.
