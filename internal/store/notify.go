@@ -59,25 +59,8 @@ func (s *Store) ClearPendingFailures() error {
 }
 
 func (s *Store) MonthlyStats(monthPrefix string) ([]DomainStats, error) {
-	rows, err := s.db.Query(`SELECT d.name,
-		SUM(CASE WHEN e.status='sent' THEN 1 ELSE 0 END),
-		SUM(CASE WHEN e.status='failed' THEN 1 ELSE 0 END)
-		FROM emails e JOIN domains d ON d.id=e.domain_id
-		WHERE e.created_at LIKE ? || '%'
-		GROUP BY d.name ORDER BY d.name`, monthPrefix)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []DomainStats
-	for rows.Next() {
-		var st DomainStats
-		if err := rows.Scan(&st.DomainName, &st.Sent, &st.Failed); err != nil {
-			return nil, err
-		}
-		out = append(out, st)
-	}
-	return out, rows.Err()
+	from, to := monthRange(monthPrefix)
+	return s.DomainVolume(from, to)
 }
 
 func (s *Store) FailureRate(domainID int64, since string) (failed, total int, err error) {
@@ -90,18 +73,6 @@ func (s *Store) FailureRate(domainID int64, since string) (failed, total int, er
 }
 
 func (s *Store) TopFailureReasons(monthPrefix string, limit int) ([]ReasonCount, error) {
-	rows, err := s.db.Query(`SELECT last_error, COUNT(*) FROM emails WHERE status='failed' AND created_at LIKE ?||'%' AND last_error != '' GROUP BY last_error ORDER BY COUNT(*) DESC LIMIT ?`, monthPrefix, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ReasonCount
-	for rows.Next() {
-		var rc ReasonCount
-		if err := rows.Scan(&rc.Reason, &rc.Count); err != nil {
-			return nil, err
-		}
-		out = append(out, rc)
-	}
-	return out, rows.Err()
+	from, to := monthRange(monthPrefix)
+	return s.FailureReasons(from, to, limit)
 }

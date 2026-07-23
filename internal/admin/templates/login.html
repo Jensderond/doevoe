@@ -2,7 +2,7 @@
 <div class="login-wrap">
   <h1>Log in</h1>
   {{with .Error}}<p class="error">{{.}}</p>{{end}}
-  <form method="post" action="/admin/login" class="card login-card">
+  <form method="post" action="/admin/login" class="card login-card" hx-boost="false">
     <label for="password">Admin password</label>
     <input type="password" id="password" name="password" autofocus autocomplete="current-password">
     <button type="submit" class="primary">Log in</button>

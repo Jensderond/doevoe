@@ -1,0 +1,29 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>Overview</h1>
+  <div class="range-toggle">
+    <a href="/admin/?range=7"{{if eq .Days 7}} class="active"{{end}}>7d</a>
+    <a href="/admin/?range=30"{{if eq .Days 30}} class="active"{{end}}>30d</a>
+    <a href="/admin/?range=90"{{if eq .Days 90}} class="active"{{end}}>90d</a>
+  </div>
+</div>
+
+<div class="kpis">
+  <div class="kpi"><span class="kpi-num">{{.Summary.Sent}}</span><span class="kpi-label">Sent</span></div>
+  <div class="kpi"><span class="kpi-num">{{printf "%.1f%%" .Summary.SuccessRate}}</span><span class="kpi-label">Success rate</span></div>
+  <div class="kpi"><span class="kpi-num">{{.Summary.Failed}}</span><span class="kpi-label">Failed</span></div>
+  <div class="kpi"><span class="kpi-num">{{.Summary.Queued}}</span><span class="kpi-label">In flight</span></div>
+</div>
+
+<h2 class="section-title">Volume over time</h2>
+<div class="card chart-card">
+  {{.VolumeChart}}
+  <div class="chart-legend"><span class="lg lg-sent">Sent</span><span class="lg lg-failed">Failed</span></div>
+</div>
+
+<h2 class="section-title">Volume by domain</h2>
+<div class="card">{{.DomainChart}}</div>
+
+<h2 class="section-title">Top failure reasons</h2>
+<div class="card">{{.ReasonChart}}</div>
+{{end}}
