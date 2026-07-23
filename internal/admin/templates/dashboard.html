@@ -17,13 +17,15 @@
 
 <h2 class="section-title">Volume over time</h2>
 <div class="card chart-card">
-  {{.VolumeChart}}
+  <div class="chart chart-volume" id="chart-volume"></div>
   <div class="chart-legend"><span class="lg lg-sent">Sent</span><span class="lg lg-failed">Failed</span></div>
 </div>
 
 <h2 class="section-title">Volume by domain</h2>
-<div class="card">{{.DomainChart}}</div>
+<div class="card"><div class="chart" id="chart-domains"></div></div>
 
 <h2 class="section-title">Top failure reasons</h2>
-<div class="card">{{.ReasonChart}}</div>
+<div class="card"><div class="chart" id="chart-reasons"></div></div>
+
+<script id="dashboard-data" type="application/json">{{.DataJSON}}</script>
 {{end}}

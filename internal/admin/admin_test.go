@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -262,6 +264,85 @@ func TestDashboardShowsKPIs(t *testing.T) {
 	}
 	if !strings.Contains(body, "Overview") {
 		t.Error("dashboard should show the Overview heading/nav")
+	}
+}
+
+func TestDashboardEmbedsChartData(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, err := s.CreateDomain("a.test", "mail1", "pk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		id, err := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@a.test", To: "b@b.test", Subject: "hi"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MarkSent(id, store.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id, err := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@a.test", To: "c@c.test", Subject: "bye"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkFailed(id, "550 mailbox unavailable"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := c.Get(srv.URL + "/admin/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, `id="dashboard-data"`) {
+		t.Fatal("dashboard should embed chart data in a #dashboard-data script tag")
+	}
+	m := regexp.MustCompile(`(?s)<script id="dashboard-data" type="application/json">(.*?)</script>`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("could not locate the dashboard-data JSON script tag")
+	}
+	var data struct {
+		RangeDays int `json:"rangeDays"`
+		Daily     []struct {
+			Date   string `json:"date"`
+			Sent   int    `json:"sent"`
+			Failed int    `json:"failed"`
+		} `json:"daily"`
+		Domains []struct {
+			Name   string `json:"name"`
+			Sent   int    `json:"sent"`
+			Failed int    `json:"failed"`
+		} `json:"domains"`
+		Reasons []struct {
+			Reason string `json:"reason"`
+			Count  int    `json:"count"`
+		} `json:"reasons"`
+	}
+	if err := json.Unmarshal([]byte(m[1]), &data); err != nil {
+		t.Fatalf("embedded dashboard data must be valid JSON: %v", err)
+	}
+	if data.RangeDays != 30 {
+		t.Errorf("rangeDays = %d, want 30", data.RangeDays)
+	}
+	if len(data.Daily) != 30 {
+		t.Fatalf("daily must be gap-filled to 30 entries, got %d", len(data.Daily))
+	}
+	today := time.Now().UTC().Format("2006-01-02")
+	last := data.Daily[len(data.Daily)-1]
+	if last.Date != today {
+		t.Errorf("last daily entry = %q, want today %q (oldest→newest)", last.Date, today)
+	}
+	if last.Sent != 2 || last.Failed != 1 {
+		t.Errorf("today's counts = %d sent / %d failed, want 2/1", last.Sent, last.Failed)
+	}
+	if len(data.Domains) != 1 || data.Domains[0].Name != "a.test" ||
+		data.Domains[0].Sent != 2 || data.Domains[0].Failed != 1 {
+		t.Errorf("domains = %+v, want [a.test 2 sent / 1 failed]", data.Domains)
+	}
+	if len(data.Reasons) != 1 || data.Reasons[0].Reason != "550 mailbox unavailable" || data.Reasons[0].Count != 1 {
+		t.Errorf("reasons = %+v, want [550 mailbox unavailable ×1]", data.Reasons)
 	}
 }
 
