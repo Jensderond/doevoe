@@ -163,7 +163,7 @@ function drawVolume(box, daily) {
   const { top, ticks } = ticksFor(maxDay);
 
   const mLeft = Math.ceil(String(top).length * charW(10)) + 12;
-  const mRight = 4;
+  const mRight = 20; // room for the newest date label, which is always drawn
   const mTop = 8;
   const mBottom = 24;
   const plotW = width - mLeft - mRight;
