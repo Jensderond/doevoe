@@ -173,3 +173,64 @@ func TestVerifyDomainNilCheckDomain(t *testing.T) {
 			updated.SPFVerified, updated.DKIMVerified, updated.DMARCVerified)
 	}
 }
+
+func TestServesHtmx(t *testing.T) {
+	_, srv, c := adminFixture(t)
+	resp, err := c.Get(srv.URL + "/admin/static/htmx.min.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if body := readBody(t, resp); len(body) < 1000 {
+		t.Errorf("htmx.min.js too small: %d bytes", len(body))
+	}
+}
+
+func TestHXRequestReturnsFragment(t *testing.T) {
+	_, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	req, _ := http.NewRequest("GET", srv.URL+"/admin/emails", nil)
+	req.Header.Set("HX-Request", "true")
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	if strings.Contains(body, "<!doctype html>") || strings.Contains(body, "<html") {
+		t.Error("HX fragment must not contain the full document")
+	}
+	if !strings.Contains(body, `id="shell"`) {
+		t.Error("fragment must contain the shell element")
+	}
+}
+
+func TestFullPageWithoutHXRequest(t *testing.T) {
+	_, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	resp, err := c.Get(srv.URL + "/admin/emails")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(readBody(t, resp), "<!doctype html>") {
+		t.Error("normal request must return the full document")
+	}
+}
+
+func TestExpiredSessionHXRedirect(t *testing.T) {
+	_, srv, c := adminFixture(t) // never logs in → unauthenticated
+	req, _ := http.NewRequest("GET", srv.URL+"/admin/emails", nil)
+	req.Header.Set("HX-Request", "true")
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("HX-Redirect"); got != "/admin/login" {
+		t.Errorf("HX-Redirect = %q, want /admin/login", got)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}

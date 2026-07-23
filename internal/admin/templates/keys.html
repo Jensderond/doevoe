@@ -8,7 +8,7 @@
 </div>
 {{end}}
 
-<form method="post" action="/admin/keys" class="card">
+<form method="post" action="/admin/keys" class="card" hx-boost="false">
   <label>Name <input name="name" placeholder="site-a production" required></label>
   <label>Domain
     <select name="domain_id">
@@ -31,7 +31,7 @@
     {{with .LastUsedAt}}<span>Last used {{.}}</span>{{end}}
   </div>
   {{if not .Revoked}}
-  <form method="post" action="/admin/keys/{{.ID}}/revoke" class="actions">
+  <form method="post" action="/admin/keys/{{.ID}}/revoke" class="actions" hx-boost="false">
     <button type="submit">Revoke</button>
   </form>
   {{end}}

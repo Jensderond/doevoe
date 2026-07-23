@@ -1,7 +1,7 @@
 {{define "content"}}
 <h1>Domains</h1>
 
-<form method="post" action="/admin/domains" class="card">
+<form method="post" action="/admin/domains" class="card" hx-boost="false">
   <label>Add sending domain <input name="name" placeholder="client.example" required></label>
   <div class="actions"><button type="submit" class="primary">Add domain</button></div>
 </form>

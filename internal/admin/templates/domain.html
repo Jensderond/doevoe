@@ -22,7 +22,7 @@
 </div>
 {{end}}
 
-<form method="post" action="/admin/domains/{{.Domain.ID}}/verify" class="actions">
+<form method="post" action="/admin/domains/{{.Domain.ID}}/verify" class="actions" hx-boost="false">
   <button type="submit" class="primary">Verify DNS records</button>
 </form>
 {{with .Domain.LastCheckedAt}}<p class="row-meta">Last checked: {{.}}</p>{{end}}

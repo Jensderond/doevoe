@@ -20,7 +20,7 @@
 
 {{if eq .Email.Status "failed"}}
 <h2 class="section-title">Retry</h2>
-<form method="post" action="/admin/emails/{{.Email.ID}}/retry" class="card">
+<form method="post" action="/admin/emails/{{.Email.ID}}/retry" class="card" hx-boost="false">
   <label>Recipient (edit to fix a typo, leave as-is to retry unchanged)
     <input name="to" value="{{.Email.To}}">
   </label>

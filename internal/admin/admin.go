@@ -51,7 +51,7 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 	static, _ := fs.Sub(assets, "static")
 	mux.Handle("GET /admin/static/", http.StripPrefix("/admin/static/", http.FileServer(http.FS(static))))
 	mux.HandleFunc("GET /admin/login", func(w http.ResponseWriter, r *http.Request) {
-		a.render(w, "login", map[string]any{})
+		a.render(w, r, "login", map[string]any{})
 	})
 	mux.HandleFunc("POST /admin/login", a.login)
 	mux.Handle("POST /admin/logout", a.auth(a.logout))
@@ -76,7 +76,7 @@ func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
 		if a.loginFailDelay > 0 {
 			time.Sleep(a.loginFailDelay)
 		}
-		a.renderStatus(w, http.StatusUnauthorized, "login", map[string]any{"Error": "Wrong password"})
+		a.renderStatus(w, r, http.StatusUnauthorized, "login", map[string]any{"Error": "Wrong password"})
 		return
 	}
 	a.newSession(w)
@@ -111,6 +111,14 @@ func (a *Admin) authed(r *http.Request) bool {
 func (a *Admin) auth(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !a.authed(r) {
+			// A 303 body would be swapped into the page shell by htmx; use
+			// HX-Redirect so a boosted request expiring mid-session does a
+			// full navigation to the login page instead.
+			if r.Header.Get("HX-Request") == "true" {
+				w.Header().Set("HX-Redirect", "/admin/login")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
@@ -127,7 +135,7 @@ var navSection = map[string]string{
 	"keys": "keys",
 }
 
-func (a *Admin) renderStatus(w http.ResponseWriter, status int, page string, data any) {
+func (a *Admin) renderStatus(w http.ResponseWriter, r *http.Request, status int, page string, data any) {
 	tpl, err := template.ParseFS(assets, "templates/layout.html", "templates/"+page+".html")
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -139,13 +147,19 @@ func (a *Admin) renderStatus(w http.ResponseWriter, status int, page string, dat
 		Nav  string
 		Data any
 	}{Nav: navSection[page], Data: data}
-	if err := tpl.ExecuteTemplate(w, "layout", view); err != nil {
+	// htmx boosted navigation only needs the shell (topbar + main); the full
+	// document (head, scripts) is sent for a normal load.
+	name := "layout"
+	if r.Header.Get("HX-Request") == "true" {
+		name = "shell"
+	}
+	if err := tpl.ExecuteTemplate(w, name, view); err != nil {
 		http.Error(w, err.Error(), 500)
 	}
 }
 
-func (a *Admin) render(w http.ResponseWriter, page string, data any) {
-	a.renderStatus(w, http.StatusOK, page, data)
+func (a *Admin) render(w http.ResponseWriter, r *http.Request, page string, data any) {
+	a.renderStatus(w, r, http.StatusOK, page, data)
 }
 
 func (a *Admin) newSession(w http.ResponseWriter) {
@@ -232,7 +246,7 @@ func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {
 		nextURL = pageURL(page + 1)
 	}
 	domains, _ := a.Store.ListDomains()
-	a.render(w, "emails", map[string]any{
+	a.render(w, r, "emails", map[string]any{
 		"Emails": emails, "Domains": domains,
 		"Status": f.Status, "Query": f.Search, "DomainID": domainID,
 		"From": fromDate, "To": toDate,
@@ -250,7 +264,7 @@ func (a *Admin) showEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	attempts, _ := a.Store.ListAttempts(id)
 	domain, _ := a.Store.GetDomain(e.DomainID)
-	a.render(w, "email", map[string]any{"Email": e, "Attempts": attempts, "Domain": domain})
+	a.render(w, r, "email", map[string]any{"Email": e, "Attempts": attempts, "Domain": domain})
 }
 
 func (a *Admin) retryEmail(w http.ResponseWriter, r *http.Request) {
@@ -283,7 +297,7 @@ func (a *Admin) retryEmail(w http.ResponseWriter, r *http.Request) {
 
 func (a *Admin) listDomains(w http.ResponseWriter, r *http.Request) {
 	domains, _ := a.Store.ListDomains()
-	a.render(w, "domains", map[string]any{"Domains": domains})
+	a.render(w, r, "domains", map[string]any{"Domains": domains})
 }
 
 func (a *Admin) createDomain(w http.ResponseWriter, r *http.Request) {
@@ -318,7 +332,7 @@ func (a *Admin) showDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	records := dkimkeys.Records(d.Name, d.DKIMSelector, pubB64, a.EgressIP, a.AdminEmail)
-	a.render(w, "domain", map[string]any{"Domain": d, "Records": records})
+	a.render(w, r, "domain", map[string]any{"Domain": d, "Records": records})
 }
 
 func (a *Admin) verifyDomain(w http.ResponseWriter, r *http.Request) {
@@ -346,17 +360,17 @@ func (a *Admin) verifyDomain(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Admin) listKeys(w http.ResponseWriter, r *http.Request) {
-	a.renderKeys(w, "")
+	a.renderKeys(w, r, "")
 }
 
-func (a *Admin) renderKeys(w http.ResponseWriter, newToken string) {
+func (a *Admin) renderKeys(w http.ResponseWriter, r *http.Request, newToken string) {
 	keys, _ := a.Store.ListAPIKeys()
 	domains, _ := a.Store.ListDomains()
 	byID := map[int64]string{}
 	for _, d := range domains {
 		byID[d.ID] = d.Name
 	}
-	a.render(w, "keys", map[string]any{"Keys": keys, "Domains": domains, "DomainNames": byID, "NewToken": newToken})
+	a.render(w, r, "keys", map[string]any{"Keys": keys, "Domains": domains, "DomainNames": byID, "NewToken": newToken})
 }
 
 func (a *Admin) createKey(w http.ResponseWriter, r *http.Request) {
@@ -379,7 +393,7 @@ func (a *Admin) createKey(w http.ResponseWriter, r *http.Request) {
 	if a.OnKeyCreated != nil {
 		a.OnKeyCreated(name, d.Name)
 	}
-	a.renderKeys(w, token) // shown exactly once
+	a.renderKeys(w, r, token) // shown exactly once
 }
 
 func (a *Admin) revokeKey(w http.ResponseWriter, r *http.Request) {

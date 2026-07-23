@@ -15,7 +15,13 @@
 <meta name="apple-mobile-web-app-title" content="doevoe">
 <link rel="stylesheet" href="/admin/static/doevoe.css">
 </head>
-<body>
+<body hx-boost="true" hx-target="#shell" hx-swap="outerHTML">
+{{template "shell" .}}
+<script src="/admin/static/htmx.min.js"></script>
+</body>
+</html>{{end}}
+
+{{define "shell"}}<div id="shell">
 <header class="topbar">
   <div class="topbar-inner">
     <a class="wordmark" href="/admin/emails">doevoe</a>
@@ -24,11 +30,10 @@
       <a href="/admin/domains"{{if eq .Nav "domains"}} class="active" aria-current="page"{{end}}>Domains</a>
       <a href="/admin/keys"{{if eq .Nav "keys"}} class="active" aria-current="page"{{end}}>API keys</a>
     </nav>
-    <form method="post" action="/admin/logout"><button class="link">Log out</button></form>
+    <form method="post" action="/admin/logout" hx-boost="false"><button class="link">Log out</button></form>
   </div>
 </header>
 <main class="container">
 {{template "content" .Data}}
 </main>
-</body>
-</html>{{end}}
+</div>{{end}}
