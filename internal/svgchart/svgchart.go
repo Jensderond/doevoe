@@ -51,10 +51,16 @@ func StackedBars(days []DayBar) template.HTML {
 	fmt.Fprintf(&b, `<svg viewBox="0 0 %.0f %.0f" class="chart" role="img" aria-label="Daily email volume: sent and failed" preserveAspectRatio="none">`, w, plotH)
 	b.WriteString(`<title>Daily email volume</title>`)
 	for i, d := range days {
-		x := float64(i)*step + gap
+		colX := float64(i) * step
+		x := colX + gap
 		bw := step - gap*2
 		sentH := float64(d.Sent) / float64(max) * plotH
 		failH := float64(d.Failed) / float64(max) * plotH
+		// Group each column with a native <title> so hovering shows that day's
+		// detail; a full-height transparent hit area keeps empty/short days
+		// hoverable too. No JS — the browser renders the tooltip.
+		fmt.Fprintf(&b, `<g><title>%s: %d sent, %d failed</title><rect x="%.2f" y="0" width="%.2f" height="%.2f" fill="none" pointer-events="all"/>`,
+			template.HTMLEscapeString(d.Label), d.Sent, d.Failed, colX, step, plotH)
 		if sentH > 0 {
 			fmt.Fprintf(&b, `<rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" fill="var(--green)"/>`,
 				x, plotH-sentH, bw, sentH)
@@ -63,6 +69,7 @@ func StackedBars(days []DayBar) template.HTML {
 			fmt.Fprintf(&b, `<rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" fill="var(--red)"/>`,
 				x, plotH-sentH-failH, bw, failH)
 		}
+		b.WriteString(`</g>`)
 	}
 	b.WriteString(`</svg>`)
 	return template.HTML(b.String())
@@ -86,8 +93,10 @@ func HBars(bars []HBar) template.HTML {
 	for _, x := range bars {
 		pct := float64(x.Value) / float64(max) * 100
 		label := template.HTMLEscapeString(x.Label)
-		fmt.Fprintf(&b, `<div class="hbar"><span class="hbar-label" title="%s">%s</span><span class="hbar-track"><span class="hbar-fill" style="width:%.1f%%"></span></span><span class="hbar-value">%d</span></div>`,
-			label, label, pct, x.Value)
+		// title on the whole row: hovering anywhere shows the full (often
+		// truncated) label plus its value. Native tooltip, no JS.
+		fmt.Fprintf(&b, `<div class="hbar" title="%s: %d"><span class="hbar-label">%s</span><span class="hbar-track"><span class="hbar-fill" style="width:%.1f%%"></span></span><span class="hbar-value">%d</span></div>`,
+			label, x.Value, label, pct, x.Value)
 	}
 	b.WriteString(`</div>`)
 	return template.HTML(b.String())

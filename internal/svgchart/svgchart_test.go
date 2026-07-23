@@ -61,3 +61,28 @@ func TestHBarsEmptyIsPlaceholder(t *testing.T) {
 		t.Error("empty input should render the placeholder")
 	}
 }
+
+func TestStackedBarsPerDayTooltip(t *testing.T) {
+	out := string(StackedBars([]DayBar{{Label: "07-01", Sent: 2, Failed: 1}}))
+	if !strings.Contains(out, "<title>07-01: 2 sent, 1 failed</title>") {
+		t.Errorf("expected per-day tooltip, got %q", out)
+	}
+	// A full-height transparent hit area keeps empty/short days hoverable.
+	if !strings.Contains(out, `pointer-events="all"`) {
+		t.Error("expected a full-column hover hit area")
+	}
+}
+
+func TestHBarsRowTooltip(t *testing.T) {
+	out := string(HBars([]HBar{{Label: "b.test", Value: 5}}))
+	if !strings.Contains(out, `title="b.test: 5"`) {
+		t.Errorf("expected a full-detail row tooltip, got %q", out)
+	}
+}
+
+func TestHBarsRowTooltipEscapes(t *testing.T) {
+	out := string(HBars([]HBar{{Label: `"x"`, Value: 1}}))
+	if strings.Contains(out, `title=""x": 1"`) {
+		t.Error("row tooltip must escape quotes in the label")
+	}
+}
