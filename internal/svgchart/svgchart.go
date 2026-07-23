@@ -45,7 +45,10 @@ func StackedBars(days []DayBar) template.HTML {
 	)
 	w := float64(len(days)) * step
 	var b strings.Builder
-	fmt.Fprintf(&b, `<svg viewBox="0 0 %.0f %.0f" class="chart" role="img" aria-label="Daily email volume: sent and failed" preserveAspectRatio="none" style="width:100%%;height:auto">`, w, plotH)
+	// No inline width/height: the .chart CSS rule fixes the rendered height so
+	// the chart stays a consistent size whether the range is 7 or 90 days
+	// (preserveAspectRatio="none" lets the bars stretch to fill that box).
+	fmt.Fprintf(&b, `<svg viewBox="0 0 %.0f %.0f" class="chart" role="img" aria-label="Daily email volume: sent and failed" preserveAspectRatio="none">`, w, plotH)
 	b.WriteString(`<title>Daily email volume</title>`)
 	for i, d := range days {
 		x := float64(i)*step + gap
