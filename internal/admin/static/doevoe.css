@@ -304,3 +304,42 @@ del { opacity: .55; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* ---- dashboard ---------------------------------------------------------- */
+.range-toggle { display: inline-flex; gap: .25rem; margin-left: auto; margin-bottom: .35rem; }
+.range-toggle a {
+  text-decoration: none; font-size: .78rem; font-weight: 600;
+  padding: .35rem .6rem; border: 1px solid var(--line); border-radius: .5rem;
+  color: var(--muted); background: var(--card);
+}
+.range-toggle a.active { color: var(--ink); border-color: var(--ink); }
+.kpis {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: .7rem; margin-bottom: .4rem;
+}
+.kpi {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: .65rem; padding: .9rem 1rem;
+  display: flex; flex-direction: column; gap: .2rem;
+}
+.kpi-num { font-size: 1.5rem; font-weight: 750; letter-spacing: -.03em; }
+.kpi-label {
+  font-size: .7rem; font-weight: 600; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--muted);
+}
+.chart-card .chart { display: block; }
+.chart-legend { display: flex; gap: 1rem; margin-top: .6rem; font-size: .72rem; color: var(--muted); }
+.chart-legend .lg::before {
+  content: ""; display: inline-block; width: .6em; height: .6em;
+  border-radius: 2px; margin-right: .35em;
+}
+.chart-legend .lg-sent::before { background: var(--green); }
+.chart-legend .lg-failed::before { background: var(--red); }
+.hbars { display: grid; gap: .5rem; }
+.hbar { display: grid; grid-template-columns: 8rem 1fr 2.5rem; align-items: center; gap: .6rem; font-size: .78rem; }
+.hbar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.hbar-track { background: var(--inset); border-radius: 3px; height: 1rem; overflow: hidden; }
+.hbar-fill { display: block; height: 100%; background: var(--blue); }
+.hbar-value { text-align: right; color: var(--muted); font-family: var(--font-mono); }
+@media (min-width: 48rem) {
+  .kpis { grid-template-columns: repeat(4, 1fr); }
+}

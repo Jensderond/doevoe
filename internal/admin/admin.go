@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"doevoe/internal/dkimkeys"
 	"doevoe/internal/dnscheck"
 	"doevoe/internal/store"
+	"doevoe/internal/svgchart"
 )
 
 //go:embed templates/*.html static/*
@@ -55,9 +57,7 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /admin/login", a.login)
 	mux.Handle("POST /admin/logout", a.auth(a.logout))
-	mux.Handle("GET /admin/{$}", a.auth(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/admin/emails", http.StatusSeeOther)
-	}))
+	mux.Handle("GET /admin/{$}", a.auth(a.dashboard))
 	mux.Handle("GET /admin/emails", a.auth(a.listEmails))
 	mux.Handle("GET /admin/emails/{id}", a.auth(a.showEmail))
 	mux.Handle("POST /admin/emails/{id}/retry", a.auth(a.retryEmail))
@@ -130,7 +130,8 @@ func (a *Admin) auth(h http.HandlerFunc) http.Handler {
 // highlight as active (detail pages like "email"/"domain" highlight their
 // parent list page).
 var navSection = map[string]string{
-	"emails": "emails", "email": "emails",
+	"dashboard": "dashboard",
+	"emails":    "emails", "email": "emails",
 	"domains": "domains", "domain": "domains",
 	"keys": "keys",
 }
@@ -179,6 +180,61 @@ func (a *Admin) newSession(w http.ResponseWriter) {
 func parseFilterDate(v string) (day time.Time, ok bool) {
 	t, err := time.ParseInLocation("2006-01-02", v, time.UTC)
 	return t, err == nil
+}
+
+func (a *Admin) dashboard(w http.ResponseWriter, r *http.Request) {
+	days := 30
+	switch r.URL.Query().Get("range") {
+	case "7":
+		days = 7
+	case "90":
+		days = 90
+	}
+	// Half-open window covering the last `days` full UTC calendar days.
+	now := time.Now().UTC()
+	startDay := now.Truncate(24 * time.Hour).AddDate(0, 0, -(days - 1))
+	from := store.FmtTime(startDay)
+	to := store.FmtTime(startDay.AddDate(0, 0, days))
+
+	summary, err := a.Store.SummaryStats(from, to)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	daily, _ := a.Store.DailyVolume(from, to)
+	domainStats, _ := a.Store.DomainVolume(from, to)
+	reasons, _ := a.Store.FailureReasons(from, to, 8)
+
+	// Fill gaps so the time axis is continuous across the whole range.
+	byDay := map[string]store.DayCount{}
+	for _, d := range daily {
+		byDay[d.Date] = d
+	}
+	bars := make([]svgchart.DayBar, 0, days)
+	for i := 0; i < days; i++ {
+		day := startDay.AddDate(0, 0, i)
+		dc := byDay[day.Format("2006-01-02")]
+		bars = append(bars, svgchart.DayBar{Label: day.Format("01-02"), Sent: dc.Sent, Failed: dc.Failed})
+	}
+
+	domainBars := make([]svgchart.HBar, 0, len(domainStats))
+	for _, d := range domainStats {
+		domainBars = append(domainBars, svgchart.HBar{Label: d.DomainName, Value: d.Sent + d.Failed})
+	}
+	sort.Slice(domainBars, func(i, j int) bool { return domainBars[i].Value > domainBars[j].Value })
+
+	reasonBars := make([]svgchart.HBar, 0, len(reasons))
+	for _, rc := range reasons {
+		reasonBars = append(reasonBars, svgchart.HBar{Label: rc.Reason, Value: rc.Count})
+	}
+
+	a.render(w, r, "dashboard", map[string]any{
+		"Days":        days,
+		"Summary":     summary,
+		"VolumeChart": svgchart.StackedBars(bars),
+		"DomainChart": svgchart.HBars(domainBars),
+		"ReasonChart": svgchart.HBars(reasonBars),
+	})
 }
 
 func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {

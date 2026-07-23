@@ -234,3 +234,48 @@ func TestExpiredSessionHXRedirect(t *testing.T) {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 }
+
+func TestDashboardShowsKPIs(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, err := s.CreateDomain("a.test", "mail1", "pk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@a.test", To: "b@b.test", Subject: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkSent(id, store.Now()); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Get(srv.URL + "/admin/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "Success rate") {
+		t.Error("dashboard should show the success-rate KPI")
+	}
+	if !strings.Contains(body, "Overview") {
+		t.Error("dashboard should show the Overview heading/nav")
+	}
+}
+
+func TestDashboardRangeToggle(t *testing.T) {
+	_, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	resp, err := c.Get(srv.URL + "/admin/?range=7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if !strings.Contains(readBody(t, resp), `href="/admin/?range=7" class="active"`) {
+		t.Error("range=7 should mark the 7d toggle active")
+	}
+}

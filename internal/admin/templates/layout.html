@@ -24,8 +24,9 @@
 {{define "shell"}}<div id="shell">
 <header class="topbar">
   <div class="topbar-inner">
-    <a class="wordmark" href="/admin/emails">doevoe</a>
+    <a class="wordmark" href="/admin/">doevoe</a>
     <nav>
+      <a href="/admin/"{{if eq .Nav "dashboard"}} class="active" aria-current="page"{{end}}>Overview</a>
       <a href="/admin/emails"{{if eq .Nav "emails"}} class="active" aria-current="page"{{end}}>Emails</a>
       <a href="/admin/domains"{{if eq .Nav "domains"}} class="active" aria-current="page"{{end}}>Domains</a>
       <a href="/admin/keys"{{if eq .Nav "keys"}} class="active" aria-current="page"{{end}}>API keys</a>
