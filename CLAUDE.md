@@ -53,6 +53,12 @@ struct fields, not interfaces/DI framework):
   in `admin.go` decide what the page offers, and the store's conditional UPDATEs
   (`RequeueEmail`/`CancelEmail`, guarded on status) are the authority that keeps
   either action from racing a worker mid-send.
+  The email list is date-bounded by default (`defaultEmailRange`): `resolveEmailWindow`
+  turns the `range`/`from`/`to` query params into one `emailWindow` that feeds both the
+  store filter and every link on the page, so a rendered link can never re-resolve to a
+  different period than the page it came from. `static/filters.js` is pure enhancement
+  (auto-submit on a period chip, auto-select `Custom` when a date is typed) — the form
+  works without it.
 - **`internal/delivery`** — the sending pipeline:
   - `worker.go`: polls `store.ClaimDue` on a ticker, delivers concurrently with a
     per-recipient-domain concurrency limit (semaphore per domain), recovers panics per-email

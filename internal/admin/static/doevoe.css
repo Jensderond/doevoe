@@ -226,6 +226,10 @@ form.card label + label, form.card label + input { margin-top: .8rem; }
 .filters summary::-webkit-details-marker { display: none; }
 .filters summary::after { content: " +"; color: var(--blue); }
 .filters[open] summary::after { content: " –"; }
+/* The active window is spelled out on the closed summary: the list is
+   date-bounded by default, so "Filter" alone would hide that from view. */
+.filters .filter-state { text-transform: none; letter-spacing: 0; font-weight: 550; }
+.filters .filter-state::before { content: "· "; }
 .filters form {
   display: grid; gap: .7rem;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -234,6 +238,44 @@ form.card label + label, form.card label + input { margin-top: .8rem; }
 .filters form > label { min-width: 0; }
 .filters input, .filters select { min-width: 0; }
 .filters .wide, .filters button { grid-column: 1 / -1; }
+/* Mobile first: a native date input needs the full width to stay legible
+   (and tappable), so the two of them stack instead of sharing a row. */
+.filters .field-date { grid-column: 1 / -1; }
+.filters .field-hint {
+  grid-column: 1 / -1; margin: -.35rem 0 0;
+  font-size: .72rem; color: var(--muted);
+}
+.filters .field-hint strong { font-weight: 650; }
+.filters .period { grid-column: 1 / -1; border: 0; padding: 0; margin: 0; min-width: 0; }
+.filters .period legend {
+  padding: 0; font-size: .8rem; font-weight: 550; color: var(--muted);
+}
+.filters .chips { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .35rem; }
+.chip-opt { display: inline-flex; }
+.chip-opt input {
+  position: absolute; width: 1px; height: 1px; margin: 0;
+  opacity: 0; pointer-events: none;
+}
+.chip-opt span {
+  display: inline-flex; align-items: center; min-height: 40px;
+  padding: .3rem .8rem; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 99px;
+  background: var(--card);
+  font-family: var(--font-mono); font-size: .8rem; font-weight: 600;
+  color: var(--muted);
+}
+.chip-opt:hover span { border-color: var(--ink); color: var(--ink); }
+/* Keyed off :checked, not a server-rendered class, so the highlight follows
+   the radio even before the form is submitted (see static/filters.js). */
+.chip-opt:has(input:checked) span {
+  border-color: var(--blue); color: light-dark(#fff, #0f141d);
+  background: var(--blue);
+}
+.chip-opt:has(input:focus-visible) span { outline: 2px solid var(--blue); outline-offset: 2px; }
+.filter-reset {
+  grid-column: 1 / -1; justify-self: start;
+  align-self: center; font-size: .8rem; font-weight: 600; color: var(--muted);
+}
 
 /* ---- detail fields ------------------------------------------------------- */
 .fields { margin: 0; display: grid; gap: .45rem; }
@@ -303,6 +345,8 @@ del { opacity: .55; }
   .filters form { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: end; }
   .filters .wide { grid-column: span 2; }
   .filters button { grid-column: auto; }
+  .filters .field-date { grid-column: auto; }
+  .filter-reset { grid-column: auto; }
   .row { padding: .85rem 1.15rem; }
   .row-top { gap: .7rem; }
   .fields > div { grid-template-columns: 6.5rem 1fr; }

@@ -185,6 +185,110 @@ func parseFilterDate(v string) (day time.Time, ok bool) {
 	return t, err == nil
 }
 
+// emailRange is one of the period chips on the email list. days is a rolling
+// window ending "now"; 0 means unbounded ("All time").
+type emailRange struct {
+	Key   string // the `range` query value, e.g. "7d"
+	Label string // chip text
+	Title string // spelled-out window, used for the chip tooltip and page summary
+	days  int
+}
+
+var emailRanges = []emailRange{
+	{Key: "1d", Label: "24h", Title: "Last 24 hours", days: 1},
+	{Key: "7d", Label: "7d", Title: "Last 7 days", days: 7},
+	{Key: "30d", Label: "30d", Title: "Last 30 days", days: 30},
+	{Key: "90d", Label: "90d", Title: "Last 90 days", days: 90},
+	{Key: "all", Label: "All", Title: "All time", days: 0},
+}
+
+// defaultEmailRange is the window a bare /admin/emails shows. The list is
+// bounded by default so the common case (what happened recently) doesn't page
+// through months of history; the "All" chip is the way out.
+const defaultEmailRange = "7d"
+
+func lookupEmailRange(key string) (emailRange, bool) {
+	for _, r := range emailRanges {
+		if r.Key == key {
+			return r, true
+		}
+	}
+	return emailRange{}, false
+}
+
+// emailWindow is the resolved created_at window for one email-list render:
+// the store bounds, the form state that produced them, and a label for the
+// page. Range is either a preset key or "custom".
+type emailWindow struct {
+	Range       string
+	FromDate    string // YYYY-MM-DD as submitted, echoed back into the date inputs
+	ToDate      string
+	CreatedFrom string // RFC3339 bounds for store.EmailFilter
+	CreatedTo   string
+	Label       string
+}
+
+func presetWindow(r emailRange, now time.Time) emailWindow {
+	win := emailWindow{Range: r.Key, Label: r.Title}
+	if r.days > 0 {
+		win.CreatedFrom = store.FmtTime(now.AddDate(0, 0, -r.days))
+	}
+	return win
+}
+
+// customWindow builds the window for two YYYY-MM-DD form values. It reports
+// false when neither parses, so the caller can fall back to a preset instead
+// of silently listing everything.
+func customWindow(fromRaw, toRaw string) (emailWindow, bool) {
+	win := emailWindow{Range: "custom"}
+	if d, ok := parseFilterDate(fromRaw); ok {
+		win.FromDate, win.CreatedFrom = fromRaw, store.FmtTime(d)
+	}
+	if d, ok := parseFilterDate(toRaw); ok {
+		// CreatedTo is exclusive; bump to the next day so the picked
+		// "to" date itself is included, as a human would expect.
+		win.ToDate, win.CreatedTo = toRaw, store.FmtTime(d.AddDate(0, 0, 1))
+	}
+	switch {
+	case win.FromDate != "" && win.ToDate != "":
+		win.Label = win.FromDate + " → " + win.ToDate
+	case win.FromDate != "":
+		win.Label = "From " + win.FromDate
+	case win.ToDate != "":
+		win.Label = "Up to " + win.ToDate
+	default:
+		return emailWindow{}, false
+	}
+	return win, true
+}
+
+// resolveEmailWindow decides which period the email list shows, in order:
+//
+//  1. range=custom — the date inputs win (that chip is what makes them count);
+//  2. range=<preset> — the rolling window, date inputs ignored;
+//  3. no range but from/to present — a bookmarked URL from before the chips
+//     existed still means a custom range;
+//  4. nothing usable, including range=custom with no parseable date — the
+//     default window.
+//
+// Nothing here can error out: like the other filters, junk degrades to a
+// sensible list rather than a 400.
+func resolveEmailWindow(q url.Values, now time.Time) emailWindow {
+	key := q.Get("range")
+	if key == "" && (q.Get("from") != "" || q.Get("to") != "") {
+		key = "custom"
+	}
+	if key == "custom" {
+		if win, ok := customWindow(q.Get("from"), q.Get("to")); ok {
+			return win
+		}
+	} else if r, ok := lookupEmailRange(key); ok {
+		return presetWindow(r, now)
+	}
+	def, _ := lookupEmailRange(defaultEmailRange)
+	return presetWindow(def, now)
+}
+
 // dashboardData is embedded as JSON in the dashboard page (the
 // #dashboard-data script tag) for static/charts.js to render client-side.
 type dashboardData struct {
@@ -279,21 +383,13 @@ func (a *Admin) dashboard(w http.ResponseWriter, r *http.Request) {
 func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	domainID, _ := strconv.ParseInt(q.Get("domain"), 10, 64)
+	win := resolveEmailWindow(q, time.Now().UTC())
 	f := store.EmailFilter{
-		Status:   q.Get("status"),
-		Search:   q.Get("q"),
-		DomainID: domainID,
-	}
-	var fromDate, toDate string
-	if d, ok := parseFilterDate(q.Get("from")); ok {
-		f.CreatedFrom = store.FmtTime(d)
-		fromDate = q.Get("from")
-	}
-	if d, ok := parseFilterDate(q.Get("to")); ok {
-		// CreatedTo is exclusive; bump to the next day so the picked
-		// "to" date itself is included, as a human would expect.
-		f.CreatedTo = store.FmtTime(d.AddDate(0, 0, 1))
-		toDate = q.Get("to")
+		Status:      q.Get("status"),
+		Search:      q.Get("q"),
+		DomainID:    domainID,
+		CreatedFrom: win.CreatedFrom,
+		CreatedTo:   win.CreatedTo,
 	}
 	const pageSize = 50
 	page, _ := strconv.Atoi(q.Get("page"))
@@ -313,7 +409,10 @@ func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {
 	if hasNext {
 		emails = emails[:pageSize]
 	}
-	pageURL := func(p int) string {
+	// Links carry the *resolved* window (range plus, for a custom range, the
+	// dates) rather than the raw query, so following one can never re-resolve
+	// to a different period than the page it was rendered on.
+	listURL := func(wd emailWindow, p int) string {
 		v := url.Values{}
 		if f.Status != "" {
 			v.Set("status", f.Status)
@@ -324,15 +423,17 @@ func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {
 		if f.Search != "" {
 			v.Set("q", f.Search)
 		}
-		if fromDate != "" {
-			v.Set("from", fromDate)
+		v.Set("range", wd.Range)
+		if wd.FromDate != "" {
+			v.Set("from", wd.FromDate)
 		}
-		if toDate != "" {
-			v.Set("to", toDate)
+		if wd.ToDate != "" {
+			v.Set("to", wd.ToDate)
 		}
 		v.Set("page", strconv.Itoa(p))
 		return "/admin/emails?" + v.Encode()
 	}
+	pageURL := func(p int) string { return listURL(win, p) }
 	var prevURL, nextURL string
 	if page > 1 {
 		prevURL = pageURL(page - 1)
@@ -344,8 +445,11 @@ func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {
 	a.render(w, r, "emails", map[string]any{
 		"Emails": emails, "Domains": domains,
 		"Status": f.Status, "Query": f.Search, "DomainID": domainID,
-		"From": fromDate, "To": toDate,
-		"Page": page, "PrevURL": prevURL, "NextURL": nextURL,
+		"From": win.FromDate, "To": win.ToDate,
+		"Ranges": emailRanges, "RangeKey": win.Range, "WindowLabel": win.Label,
+		"FiltersActive": f.Status != "" || f.Search != "" || domainID != 0 || win.Range != defaultEmailRange,
+		"AllTimeURL":    listURL(emailWindow{Range: "all"}, 1),
+		"Page":          page, "PrevURL": prevURL, "NextURL": nextURL,
 		"CurrentURL": pageURL(page),
 	})
 }

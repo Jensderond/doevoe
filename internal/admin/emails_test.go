@@ -2,11 +2,13 @@ package admin
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"doevoe/internal/store"
 )
@@ -130,6 +132,8 @@ func TestDateRangeFilter(t *testing.T) {
 		s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: to, Subject: "s", BodyText: "b", CreatedAt: day})
 	}
 
+	// A bare from/to pair (no range param) still means a custom range, so
+	// links bookmarked before the period chips existed keep working.
 	resp, _ := c.Get(srv.URL + "/admin/emails?from=2026-07-05&to=2026-07-10")
 	body := readBody(t, resp)
 	if !strings.Contains(body, "mid@dest.test") {
@@ -139,32 +143,115 @@ func TestDateRangeFilter(t *testing.T) {
 		t.Error("emails outside the date range should not be shown")
 	}
 
-	// The submitted values must round-trip into the form inputs.
+	// The submitted values must round-trip into the form inputs, with the
+	// Custom chip selected so they visibly apply.
 	if !strings.Contains(body, `value="2026-07-05"`) || !strings.Contains(body, `value="2026-07-10"`) {
 		t.Error("date inputs should retain the submitted values")
 	}
+	if !strings.Contains(body, `value="custom" checked`) {
+		t.Errorf("dates should select the Custom period chip:\n%s", body)
+	}
 
-	// Unparseable dates are ignored rather than erroring.
+	// The same window picked explicitly via the Custom chip.
+	resp, _ = c.Get(srv.URL + "/admin/emails?range=custom&from=2026-07-05&to=2026-07-10")
+	if body = readBody(t, resp); !strings.Contains(body, "mid@dest.test") ||
+		strings.Contains(body, "early@dest.test") {
+		t.Errorf("range=custom should use the submitted dates:\n%s", body)
+	}
+
+	// Unparseable dates don't error; with no usable bound left, the list falls
+	// back to its default window rather than scanning everything.
 	resp, _ = c.Get(srv.URL + "/admin/emails?from=banana&to=2026-13-99")
 	body = readBody(t, resp)
 	if resp.StatusCode != 200 {
 		t.Fatalf("invalid dates should be ignored, got status %d", resp.StatusCode)
 	}
-	for _, want := range []string{"early@dest.test", "mid@dest.test", "late@dest.test"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("invalid dates should be treated as unset, missing %s", want)
+	if !strings.Contains(body, "Last 7 days") {
+		t.Errorf("invalid dates should fall back to the default window:\n%s", body)
+	}
+}
+
+// The list opens on recent mail: no filter params means the last 7 days, and
+// the period chips are how you widen or narrow that.
+func TestDefaultAndPresetRanges(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	now := time.Now().UTC()
+	for to, age := range map[string]time.Duration{
+		"fresh@dest.test":  2 * time.Hour,
+		"recent@dest.test": 3 * 24 * time.Hour,
+		"stale@dest.test":  40 * 24 * time.Hour,
+	} {
+		s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: to,
+			Subject: "s", BodyText: "b", CreatedAt: store.FmtTime(now.Add(-age))})
+	}
+
+	// Default: last 7 days, and the page says so.
+	body := getBody(t, c, srv.URL+"/admin/emails")
+	if !strings.Contains(body, "fresh@dest.test") || !strings.Contains(body, "recent@dest.test") {
+		t.Errorf("default window should show the last 7 days:\n%s", body)
+	}
+	if strings.Contains(body, "stale@dest.test") {
+		t.Error("default window should not show a 40-day-old email")
+	}
+	if !strings.Contains(body, "Last 7 days") || !strings.Contains(body, `value="7d" checked`) {
+		t.Errorf("default window should be labeled and its chip selected:\n%s", body)
+	}
+
+	for _, tc := range []struct {
+		query        string
+		want, unwant []string
+	}{
+		{"?range=1d", []string{"fresh@dest.test"}, []string{"recent@dest.test", "stale@dest.test"}},
+		{"?range=30d", []string{"fresh@dest.test", "recent@dest.test"}, []string{"stale@dest.test"}},
+		{"?range=90d", []string{"fresh@dest.test", "stale@dest.test"}, nil},
+		{"?range=all", []string{"fresh@dest.test", "recent@dest.test", "stale@dest.test"}, nil},
+		// A preset supersedes leftover dates, and junk falls back to the default.
+		{"?range=all&from=2026-07-05&to=2026-07-10", []string{"stale@dest.test"}, nil},
+		{"?range=banana", []string{"fresh@dest.test"}, []string{"stale@dest.test"}},
+		{"?range=custom", []string{"fresh@dest.test"}, []string{"stale@dest.test"}},
+	} {
+		body := getBody(t, c, srv.URL+"/admin/emails"+tc.query)
+		for _, want := range tc.want {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s: missing %s", tc.query, want)
+			}
+		}
+		for _, unwant := range tc.unwant {
+			if strings.Contains(body, unwant) {
+				t.Errorf("%s: should not show %s", tc.query, unwant)
+			}
 		}
 	}
+
+	// The empty state offers a way out of the window that hid the rows.
+	body = getBody(t, c, srv.URL+"/admin/emails?range=1d&q=stale")
+	if !strings.Contains(body, "search all time") || !strings.Contains(body, "range=all") {
+		t.Errorf("empty state should link to the all-time list:\n%s", body)
+	}
+}
+
+func getBody(t *testing.T, c *http.Client, rawURL string) string {
+	t.Helper()
+	resp, err := c.Get(rawURL)
+	if err != nil {
+		t.Fatalf("GET %s: %v", rawURL, err)
+	}
+	return readBody(t, resp)
 }
 
 func TestPagination(t *testing.T) {
 	s, srv, c := adminFixture(t)
 	login(t, srv, c, "hunter2")
 	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	// Minutes apart within the default window, so paging is exercised on the
+	// list as it opens (u60 newest).
+	base := time.Now().UTC().Add(-2 * time.Hour)
 	for i := 1; i <= 60; i++ {
 		s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com",
 			To: fmt.Sprintf("u%02d@dest.test", i), Subject: "s", BodyText: "b",
-			CreatedAt: fmt.Sprintf("2026-07-01T10:%02d:00Z", i)})
+			CreatedAt: store.FmtTime(base.Add(time.Duration(i) * time.Minute))})
 	}
 
 	// Page 1 (default): the 50 newest, with a link to the next page.
@@ -196,12 +283,22 @@ func TestPagination(t *testing.T) {
 		t.Error("page 2 is the last page and must not link to page 3")
 	}
 
-	// Filters are preserved in pagination links.
+	// Filters, including the active period, are preserved in pagination links.
 	resp, _ = c.Get(srv.URL + "/admin/emails?status=queued&q=dest")
 	body = readBody(t, resp)
 	older := regexpMustFind(t, body, `href="[^"]*page=2[^"]*"`)
-	if !strings.Contains(older, "status=queued") || !strings.Contains(older, "q=dest") {
-		t.Errorf("pagination link should preserve filters, got %s", older)
+	for _, want := range []string{"status=queued", "q=dest", "range=7d"} {
+		if !strings.Contains(older, want) {
+			t.Errorf("pagination link should preserve %s, got %s", want, older)
+		}
+	}
+
+	// A custom range travels as its dates, not as a re-derived window.
+	from := base.Format("2006-01-02")
+	resp, _ = c.Get(srv.URL + "/admin/emails?range=custom&from=" + from)
+	older = regexpMustFind(t, readBody(t, resp), `href="[^"]*page=2[^"]*"`)
+	if !strings.Contains(older, "range=custom") || !strings.Contains(older, "from="+from) {
+		t.Errorf("pagination link should preserve the custom range, got %s", older)
 	}
 
 	// Out-of-range and invalid pages degrade gracefully.
