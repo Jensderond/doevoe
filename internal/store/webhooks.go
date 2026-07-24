@@ -16,8 +16,11 @@ import (
 type Webhook struct {
 	ID                int64
 	Name, URL, Secret string
-	Events            []string
-	Active            bool
+	// DomainID scopes the endpoint to one sending domain; 0 means every
+	// domain, present and future.
+	DomainID int64
+	Events   []string
+	Active   bool
 	// LastStatus/LastError/LastDeliveryAt summarise the most recent attempt
 	// against this endpoint so the admin list can show health without joining
 	// the deliveries table.
@@ -37,6 +40,14 @@ func (w *Webhook) Subscribed(event string) bool {
 	return false
 }
 
+// Scopes reports whether this webhook covers events about the given domain.
+func (w *Webhook) Scopes(domainID int64) bool {
+	return w.DomainID == 0 || w.DomainID == domainID
+}
+
+// AllDomains reports whether the endpoint is unscoped, for the admin UI.
+func (w *Webhook) AllDomains() bool { return w.DomainID == 0 }
+
 // WebhookDelivery is one queued attempt-set at delivering one event to one
 // webhook. Payload is snapshotted at enqueue time so a retry replays the
 // state as of the event, not as of the retry.
@@ -52,12 +63,12 @@ type WebhookDelivery struct {
 	CreatedAt, DeliveredAt string
 }
 
-const webhookCols = `id, name, url, secret, events, active, last_status, last_error, last_delivery_at, created_at`
+const webhookCols = `id, name, url, secret, domain_id, events, active, last_status, last_error, last_delivery_at, created_at`
 
 func scanWebhook(row interface{ Scan(...any) error }) (*Webhook, error) {
 	w := &Webhook{}
 	var events string
-	err := row.Scan(&w.ID, &w.Name, &w.URL, &w.Secret, &events, &w.Active,
+	err := row.Scan(&w.ID, &w.Name, &w.URL, &w.Secret, &w.DomainID, &events, &w.Active,
 		&w.LastStatus, &w.LastError, &w.LastDeliveryAt, &w.CreatedAt)
 	w.Events = splitEvents(events)
 	return w, err
@@ -75,9 +86,10 @@ func splitEvents(s string) []string {
 	return out
 }
 
-func (s *Store) CreateWebhook(name, url, secret string, events []string) (*Webhook, error) {
-	res, err := s.db.Exec(`INSERT INTO webhooks (name, url, secret, events, created_at) VALUES (?,?,?,?,?)`,
-		name, url, secret, strings.Join(events, ","), Now())
+// CreateWebhook stores a new endpoint. domainID 0 scopes it to every domain.
+func (s *Store) CreateWebhook(name, url, secret string, domainID int64, events []string) (*Webhook, error) {
+	res, err := s.db.Exec(`INSERT INTO webhooks (name, url, secret, domain_id, events, created_at) VALUES (?,?,?,?,?,?)`,
+		name, url, secret, domainID, strings.Join(events, ","), Now())
 	if err != nil {
 		return nil, err
 	}
@@ -93,13 +105,18 @@ func (s *Store) ListWebhooks() ([]*Webhook, error) {
 	return s.queryWebhooks(`SELECT ` + webhookCols + ` FROM webhooks ORDER BY created_at DESC, id DESC`)
 }
 
-// ListActiveWebhooksForEvent returns the active webhooks subscribed to event.
-// The subscription filter is applied in Go rather than SQL: the events column
-// is a comma-separated list, so a LIKE would match prefixes of other event
-// names ("email.sent" inside "email.sent_test") — exact membership is what we
-// want here.
-func (s *Store) ListActiveWebhooksForEvent(event string) ([]*Webhook, error) {
-	all, err := s.queryWebhooks(`SELECT ` + webhookCols + ` FROM webhooks WHERE active=1 ORDER BY id`)
+// ListActiveWebhooksForEvent returns the active webhooks subscribed to event
+// and in scope for the domain the event is about (domainID 0 on an endpoint
+// means every domain). Every event doevoe emits belongs to exactly one
+// domain, so callers always have one to pass.
+//
+// The domain scope is filtered in SQL, but the subscription is filtered in Go:
+// the events column is a comma-separated list, so a LIKE would match prefixes
+// of other event names ("email.sent" inside "email.sent_test") — exact
+// membership is what we want here.
+func (s *Store) ListActiveWebhooksForEvent(event string, domainID int64) ([]*Webhook, error) {
+	all, err := s.queryWebhooks(`SELECT `+webhookCols+` FROM webhooks
+		WHERE active=1 AND (domain_id=0 OR domain_id=?) ORDER BY id`, domainID)
 	if err != nil {
 		return nil, err
 	}
@@ -129,9 +146,9 @@ func (s *Store) queryWebhooks(q string, args ...any) ([]*Webhook, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) UpdateWebhook(id int64, name, url string, events []string, active bool) error {
-	_, err := s.db.Exec(`UPDATE webhooks SET name=?, url=?, events=?, active=? WHERE id=?`,
-		name, url, strings.Join(events, ","), active, id)
+func (s *Store) UpdateWebhook(id int64, name, url string, domainID int64, events []string, active bool) error {
+	_, err := s.db.Exec(`UPDATE webhooks SET name=?, url=?, domain_id=?, events=?, active=? WHERE id=?`,
+		name, url, domainID, strings.Join(events, ","), active, id)
 	return err
 }
 

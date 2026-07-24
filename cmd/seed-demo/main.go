@@ -40,7 +40,7 @@ func main() {
 	// Two endpoints so the webhooks page shows both a healthy and a broken one.
 	secret1, _ := store.GenerateWebhookSecret()
 	if hook, err := s.CreateWebhook("app delivery log", "https://app.client.example/hooks/doevoe", secret1,
-		[]string{webhook.EventEmailSent, webhook.EventEmailFailed}); err == nil {
+		0, []string{webhook.EventEmailSent, webhook.EventEmailFailed}); err == nil {
 		s.TouchWebhook(hook.ID, 200, "", "2026-07-21T08:14:00Z")
 		id, _ := s.EnqueueWebhookDelivery(&store.WebhookDelivery{
 			WebhookID: hook.ID, EmailID: 1, Event: webhook.EventEmailSent,
@@ -51,7 +51,7 @@ func main() {
 	}
 	secret2, _ := store.GenerateWebhookSecret()
 	if hook, err := s.CreateWebhook("ops slack bridge", "https://hooks.internal.example/doevoe", secret2,
-		[]string{webhook.EventDomainUnverified}); err == nil {
+		shop.ID, []string{webhook.EventDomainUnverified}); err == nil {
 		s.TouchWebhook(hook.ID, 502, "HTTP 502: bad gateway", "2026-07-21T08:20:00Z")
 		s.EnqueueWebhookDelivery(&store.WebhookDelivery{
 			WebhookID: hook.ID, Event: webhook.EventDomainUnverified,

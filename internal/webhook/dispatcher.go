@@ -101,13 +101,15 @@ type domainData struct {
 // the delivery worker: it never returns an error and never blocks on the
 // network — the actual POST happens on the dispatcher's own ticker.
 func (d *Dispatcher) EmailEvent(event string, emailID int64) {
-	hooks, err := d.subscribers(event)
-	if err != nil || len(hooks) == 0 {
-		return
-	}
+	// The email is loaded before the subscriber lookup because scoping needs
+	// its domain; there's no cheaper way to know which endpoints are in scope.
 	e, err := d.Store.GetEmail(emailID)
 	if err != nil {
 		slog.Error("webhook: load email for event", "event", event, "email", emailID, "err", err)
+		return
+	}
+	hooks, err := d.subscribers(event, e.DomainID)
+	if err != nil || len(hooks) == 0 {
 		return
 	}
 	data := emailData{
@@ -125,7 +127,7 @@ func (d *Dispatcher) EmailEvent(event string, emailID int64) {
 
 // DomainEvent emits a domain.* event for the given domain.
 func (d *Dispatcher) DomainEvent(event string, domainID int64) {
-	hooks, err := d.subscribers(event)
+	hooks, err := d.subscribers(event, domainID)
 	if err != nil || len(hooks) == 0 {
 		return
 	}
@@ -162,12 +164,13 @@ func (d *Dispatcher) Test(webhookID int64) error {
 	return err
 }
 
-// subscribers looks up the active endpoints for an event. Errors are logged
-// and reported as "none", so an event emit is always fail-open.
-func (d *Dispatcher) subscribers(event string) ([]*store.Webhook, error) {
-	hooks, err := d.Store.ListActiveWebhooksForEvent(event)
+// subscribers looks up the active endpoints for an event that are in scope for
+// the domain it's about. Errors are logged and reported as "none", so an event
+// emit is always fail-open.
+func (d *Dispatcher) subscribers(event string, domainID int64) ([]*store.Webhook, error) {
+	hooks, err := d.Store.ListActiveWebhooksForEvent(event, domainID)
 	if err != nil {
-		slog.Error("webhook: list subscribers", "event", event, "err", err)
+		slog.Error("webhook: list subscribers", "event", event, "domain", domainID, "err", err)
 		return nil, err
 	}
 	return hooks, nil

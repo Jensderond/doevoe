@@ -6,6 +6,12 @@
 <form method="post" action="/admin/webhooks" class="card" hx-boost="false">
   <label>Name <input name="name" placeholder="site-a delivery log" required></label>
   <label>Endpoint URL <input name="url" type="url" placeholder="https://app.example.com/hooks/doevoe" required></label>
+  <label>Domain
+    <select name="domain_id">
+      <option value="0">All domains</option>
+      {{range .Domains}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+    </select>
+  </label>
   <fieldset class="checkboxes">
     <legend>Events</legend>
     {{range .Events}}
@@ -28,6 +34,7 @@
   </div>
   <div class="addr">{{.URL}}</div>
   <div class="row-meta">
+    <span>{{if .AllDomains}}All domains{{else}}{{index $.DomainNames .DomainID}}{{end}}</span>
     <span>{{len .Events}} event{{if ne (len .Events) 1}}s{{end}}</span>
     {{with .LastDeliveryAt}}<span>Last try {{.}}</span>{{end}}
     {{if .LastStatus}}<span>HTTP {{.LastStatus}}</span>{{end}}

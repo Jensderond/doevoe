@@ -8,6 +8,7 @@
 <section class="card">
   <dl class="fields">
     <div><dt>URL</dt><dd>{{.Webhook.URL}}</dd></div>
+    <div><dt>Domain</dt><dd>{{if .Webhook.AllDomains}}All domains{{else}}{{with .Scope}}{{.}}{{else}}#{{$.Webhook.DomainID}}{{end}}{{end}}</dd></div>
     <div><dt>Created</dt><dd>{{.Webhook.CreatedAt}}</dd></div>
     {{with .Webhook.LastDeliveryAt}}<div><dt>Last try</dt><dd>{{.}}</dd></div>{{end}}
     {{if .Webhook.LastStatus}}<div><dt>Last code</dt><dd>HTTP {{.Webhook.LastStatus}}</dd></div>{{end}}
@@ -32,6 +33,12 @@
 <form method="post" action="/admin/webhooks/{{.Webhook.ID}}" class="card" hx-boost="false">
   <label>Name <input name="name" value="{{.Webhook.Name}}" required></label>
   <label>Endpoint URL <input name="url" type="url" value="{{.Webhook.URL}}" required></label>
+  <label>Domain
+    <select name="domain_id">
+      <option value="0"{{if .Webhook.AllDomains}} selected{{end}}>All domains</option>
+      {{range .Domains}}<option value="{{.ID}}"{{if eq .ID $.Webhook.DomainID}} selected{{end}}>{{.Name}}</option>{{end}}
+    </select>
+  </label>
   <fieldset class="checkboxes">
     <legend>Events</legend>
     {{range .Events}}

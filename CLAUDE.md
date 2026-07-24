@@ -73,7 +73,11 @@ struct fields, not interfaces/DI framework):
   `Dispatcher.EmailEvent`/`DomainEvent` snapshot a JSON payload and queue one
   `webhook_deliveries` row per subscribed endpoint (fail-open: every error is logged and
   swallowed, so a webhook problem can never affect the email operation that produced the
-  event); `Dispatcher.Run` then POSTs them on its own ticker with its own, much shorter
+  event). Every event belongs to exactly one domain, so `ListActiveWebhooksForEvent` takes
+  the domain and an endpoint's `domain_id` scopes it (0 = all domains); getting that filter
+  wrong leaks one domain's events to another tenant's endpoint, so the admin form rejects an
+  unknown/unparseable `domain_id` rather than falling back to 0. `Dispatcher.Run` then POSTs
+  queued rows on its own ticker with its own, much shorter
   backoff (`webhook.Schedule`: 30s → 2m → 10m → 30m → 2h) — read the comment there before
   reaching for `delivery.Schedule` instead. Same claim/stale-requeue pattern as the email
   worker, so `defaultTimeout` and `staleSendingWindow` in `dispatcher.go` are load-bearing

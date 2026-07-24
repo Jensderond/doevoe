@@ -185,8 +185,8 @@ sending.
 `/admin/webhooks` configures HTTP endpoints that doevoe POSTs events to, so
 your app can react to a delivery outcome without polling
 `GET /api/v1/emails/{id}`. Each endpoint subscribes to one or more events,
-gets its own signing secret, and can be paused or sent a test event from its
-detail page.
+is scoped to a single sending domain or to all of them, gets its own signing
+secret, and can be paused or sent a test event from its detail page.
 
 | Event | Fires when |
 |---|---|
@@ -199,6 +199,13 @@ The two `domain.*` events fire on a *change* only, whether the check came from
 the Verify button or the hourly re-check, so a healthy domain doesn't produce
 an event every hour. A DNS blip (an indeterminate resolver answer) changes
 nothing and reports nothing.
+
+**Scoping.** Every event belongs to exactly one sending domain — the email's
+domain for `email.*`, the checked domain for `domain.*`. An endpoint set to a
+specific domain only receives that domain's events, which is what you want when
+you host several clients on one doevoe and each has its own receiver; one set to
+**All domains** receives every domain's events, including domains added later.
+Endpoints created before scoping existed keep the all-domains behaviour.
 
 The body is `application/json`:
 

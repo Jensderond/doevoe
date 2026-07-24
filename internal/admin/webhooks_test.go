@@ -34,6 +34,10 @@ func TestCreateWebhook(t *testing.T) {
 	if h.Name != "site-a" || h.URL != "https://recv.test/hooks/doevoe" || !h.Active {
 		t.Fatalf("webhook = %+v", h)
 	}
+	// No domain picked in the form: covers every domain.
+	if !h.AllDomains() {
+		t.Errorf("domain scope = %d, want 0 (all domains)", h.DomainID)
+	}
 	if len(h.Events) != 2 {
 		t.Fatalf("events = %v", h.Events)
 	}
@@ -45,6 +49,44 @@ func TestCreateWebhook(t *testing.T) {
 	}
 }
 
+func TestCreateWebhookScopedToDomain(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, err := s.CreateDomain("client.example", "mail1", "PEM")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := c.PostForm(srv.URL+"/admin/webhooks", url.Values{
+		"name": {"client only"}, "url": {"https://recv.test/h"},
+		"domain_id": {fmt.Sprint(d.ID)}, "events": {webhook.EventEmailSent},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, readBody(t, resp))
+	}
+	hooks, _ := s.ListWebhooks()
+	if len(hooks) != 1 || hooks[0].DomainID != d.ID {
+		t.Fatalf("hooks = %+v, want one scoped to domain %d", hooks, d.ID)
+	}
+
+	// The list and detail pages must say which domain it's limited to.
+	resp, _ = c.Get(srv.URL + "/admin/webhooks")
+	if body := readBody(t, resp); !strings.Contains(body, "client.example") {
+		t.Error("list page should name the domain a scoped endpoint is limited to")
+	}
+	resp, _ = c.Get(fmt.Sprintf("%s/admin/webhooks/%d", srv.URL, hooks[0].ID))
+	body := readBody(t, resp)
+	if !strings.Contains(body, fmt.Sprintf(`value="%d" selected`, d.ID)) {
+		t.Error("detail form should preselect the scoped domain")
+	}
+	if strings.Contains(body, `value="0" selected`) {
+		t.Error("detail form should not preselect All domains for a scoped endpoint")
+	}
+}
+
 func TestCreateWebhookValidation(t *testing.T) {
 	s, srv, c := adminFixture(t)
 	login(t, srv, c, "hunter2")
@@ -53,6 +95,12 @@ func TestCreateWebhookValidation(t *testing.T) {
 		name string
 		form url.Values
 	}{
+		// A bad domain must be rejected, never silently widened to "all
+		// domains" — that would leak one domain's events to another endpoint.
+		{"unknown domain", url.Values{"name": {"x"}, "url": {"https://recv.test/h"},
+			"domain_id": {"4242"}, "events": {webhook.EventEmailSent}}},
+		{"unparseable domain", url.Values{"name": {"x"}, "url": {"https://recv.test/h"},
+			"domain_id": {"nope"}, "events": {webhook.EventEmailSent}}},
 		{"no name", url.Values{"url": {"https://recv.test/h"}, "events": {webhook.EventEmailSent}}},
 		{"no events", url.Values{"name": {"x"}, "url": {"https://recv.test/h"}}},
 		{"unknown event", url.Values{"name": {"x"}, "url": {"https://recv.test/h"}, "events": {"email.opened"}}},
@@ -78,7 +126,7 @@ func TestCreateWebhookValidation(t *testing.T) {
 func TestWebhooksListAndDetail(t *testing.T) {
 	s, srv, c := adminFixture(t)
 	login(t, srv, c, "hunter2")
-	h, err := s.CreateWebhook("site-a", "https://recv.test/h", "whsec_shown", []string{webhook.EventEmailFailed})
+	h, err := s.CreateWebhook("site-a", "https://recv.test/h", "whsec_shown", 0, []string{webhook.EventEmailFailed})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,14 +186,20 @@ func TestWebhookDetailNotFound(t *testing.T) {
 func TestUpdateWebhook(t *testing.T) {
 	s, srv, c := adminFixture(t)
 	login(t, srv, c, "hunter2")
-	h, err := s.CreateWebhook("site-a", "https://recv.test/h", "whsec_keep", []string{webhook.EventEmailSent})
+	h, err := s.CreateWebhook("site-a", "https://recv.test/h", "whsec_keep", 0, []string{webhook.EventEmailSent})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := s.CreateDomain("client.example", "mail1", "PEM")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// No "active" checkbox in the form means the endpoint is paused.
 	resp, err := c.PostForm(fmt.Sprintf("%s/admin/webhooks/%d", srv.URL, h.ID), url.Values{
-		"name": {"site-a prod"}, "url": {"https://recv.test/v2"}, "events": {webhook.EventDomainUnverified},
+		"name": {"site-a prod"}, "url": {"https://recv.test/v2"},
+		"domain_id": {fmt.Sprint(d.ID)}, "events": {webhook.EventDomainUnverified},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -157,6 +211,9 @@ func TestUpdateWebhook(t *testing.T) {
 	if got.Name != "site-a prod" || got.URL != "https://recv.test/v2" || got.Active {
 		t.Fatalf("after update: %+v", got)
 	}
+	if got.DomainID != d.ID {
+		t.Errorf("domain scope = %d, want %d", got.DomainID, d.ID)
+	}
 	if len(got.Events) != 1 || got.Events[0] != webhook.EventDomainUnverified {
 		t.Fatalf("events = %v", got.Events)
 	}
@@ -164,22 +221,27 @@ func TestUpdateWebhook(t *testing.T) {
 		t.Error("updating settings must not rotate the signing secret")
 	}
 
+	// Back to all domains, and re-enabled.
 	resp, _ = c.PostForm(fmt.Sprintf("%s/admin/webhooks/%d", srv.URL, h.ID), url.Values{
-		"name": {"site-a prod"}, "url": {"https://recv.test/v2"},
+		"name": {"site-a prod"}, "url": {"https://recv.test/v2"}, "domain_id": {"0"},
 		"events": {webhook.EventEmailSent}, "active": {"1"},
 	})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("re-activate status = %d", resp.StatusCode)
 	}
-	if got, _ := s.GetWebhook(h.ID); !got.Active {
+	got, _ = s.GetWebhook(h.ID)
+	if !got.Active {
 		t.Error("the active checkbox must re-enable the endpoint")
+	}
+	if !got.AllDomains() {
+		t.Errorf("domain scope = %d, want 0 after picking All domains", got.DomainID)
 	}
 }
 
 func TestTestWebhookCallsHook(t *testing.T) {
 	s, srv, c := adminFixture(t)
 	login(t, srv, c, "hunter2")
-	h, err := s.CreateWebhook("site-a", "https://recv.test/h", "sec", []string{webhook.EventEmailSent})
+	h, err := s.CreateWebhook("site-a", "https://recv.test/h", "sec", 0, []string{webhook.EventEmailSent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +277,7 @@ func TestTestWebhookCallsHook(t *testing.T) {
 func TestDeleteWebhook(t *testing.T) {
 	s, srv, c := adminFixture(t)
 	login(t, srv, c, "hunter2")
-	h, err := s.CreateWebhook("site-a", "https://recv.test/h", "sec", []string{webhook.EventEmailSent})
+	h, err := s.CreateWebhook("site-a", "https://recv.test/h", "sec", 0, []string{webhook.EventEmailSent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +301,7 @@ func TestDeleteWebhook(t *testing.T) {
 
 func TestWebhookRoutesRequireAuth(t *testing.T) {
 	s, srv, c := adminFixture(t) // never logs in
-	h, err := s.CreateWebhook("site-a", "https://recv.test/h", "whsec_secret", []string{webhook.EventEmailSent})
+	h, err := s.CreateWebhook("site-a", "https://recv.test/h", "whsec_secret", 0, []string{webhook.EventEmailSent})
 	if err != nil {
 		t.Fatal(err)
 	}

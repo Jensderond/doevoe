@@ -35,42 +35,73 @@ func (a *Admin) listWebhooks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	a.render(w, r, "webhooks", map[string]any{"Webhooks": hooks, "Events": eventOptions(nil)})
+	domains, _ := a.Store.ListDomains()
+	names := map[int64]string{}
+	for _, d := range domains {
+		names[d.ID] = d.Name
+	}
+	a.render(w, r, "webhooks", map[string]any{
+		"Webhooks": hooks, "Events": eventOptions(nil),
+		"Domains": domains, "DomainNames": names,
+	})
 }
 
-// webhookForm pulls the shared name/url/events fields off a create or update
-// POST, writing the 422 itself when something doesn't validate.
-func webhookForm(w http.ResponseWriter, r *http.Request) (name, url string, events []string, ok bool) {
+// webhookFields is what a create or update POST configures.
+type webhookFields struct {
+	Name, URL string
+	// DomainID is 0 when the form's domain select is left on "all domains".
+	DomainID int64
+	Events   []string
+}
+
+// webhookForm pulls the shared fields off a create or update POST, writing the
+// 422 itself when something doesn't validate.
+func (a *Admin) webhookForm(w http.ResponseWriter, r *http.Request) (f webhookFields, ok bool) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", 422)
-		return "", "", nil, false
+		return f, false
 	}
-	name = strings.TrimSpace(r.FormValue("name"))
-	url = strings.TrimSpace(r.FormValue("url"))
-	if name == "" {
+	f.Name = strings.TrimSpace(r.FormValue("name"))
+	f.URL = strings.TrimSpace(r.FormValue("url"))
+	if f.Name == "" {
 		http.Error(w, "name is required", 422)
-		return "", "", nil, false
+		return f, false
 	}
-	if err := webhook.ValidateURL(url); err != nil {
+	if err := webhook.ValidateURL(f.URL); err != nil {
 		http.Error(w, "invalid url: "+err.Error(), 422)
-		return "", "", nil, false
+		return f, false
+	}
+	// An unparseable domain_id is a rejection, not a silent fall back to "all
+	// domains": scoping too widely leaks one tenant's events to another.
+	if v := strings.TrimSpace(r.FormValue("domain_id")); v != "" && v != "0" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			http.Error(w, "invalid domain", 422)
+			return f, false
+		}
+		if _, err := a.Store.GetDomain(id); err != nil {
+			http.Error(w, "unknown domain", 422)
+			return f, false
+		}
+		f.DomainID = id
 	}
 	events, unknown := webhook.NormalizeEvents(r.Form["events"])
 	if unknown != "" {
 		http.Error(w, "unknown event: "+unknown, 422)
-		return "", "", nil, false
+		return f, false
 	}
 	// A webhook subscribed to nothing would sit there looking configured and
 	// never fire; make that a validation error rather than a silent no-op.
 	if len(events) == 0 {
 		http.Error(w, "select at least one event", 422)
-		return "", "", nil, false
+		return f, false
 	}
-	return name, url, events, true
+	f.Events = events
+	return f, true
 }
 
 func (a *Admin) createWebhook(w http.ResponseWriter, r *http.Request) {
-	name, url, events, ok := webhookForm(w, r)
+	f, ok := a.webhookForm(w, r)
 	if !ok {
 		return
 	}
@@ -79,7 +110,7 @@ func (a *Admin) createWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	hook, err := a.Store.CreateWebhook(name, url, secret, events)
+	hook, err := a.Store.CreateWebhook(f.Name, f.URL, secret, f.DomainID, f.Events)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -98,8 +129,16 @@ func (a *Admin) showWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	domains, _ := a.Store.ListDomains()
+	var scope string
+	if !hook.AllDomains() {
+		if d, err := a.Store.GetDomain(hook.DomainID); err == nil {
+			scope = d.Name
+		}
+	}
 	a.render(w, r, "webhook", map[string]any{
 		"Webhook": hook, "Events": eventOptions(hook.Events), "Deliveries": deliveries,
+		"Domains": domains, "Scope": scope,
 	})
 }
 
@@ -109,11 +148,11 @@ func (a *Admin) updateWebhook(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	name, url, events, ok := webhookForm(w, r)
+	f, ok := a.webhookForm(w, r)
 	if !ok {
 		return
 	}
-	if err := a.Store.UpdateWebhook(hook.ID, name, url, events, r.FormValue("active") != ""); err != nil {
+	if err := a.Store.UpdateWebhook(hook.ID, f.Name, f.URL, f.DomainID, f.Events, r.FormValue("active") != ""); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}

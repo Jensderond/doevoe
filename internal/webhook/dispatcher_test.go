@@ -78,10 +78,10 @@ func sentEmail(t *testing.T, s *store.Store) (*store.Domain, int64) {
 func TestEmailEventFansOutToSubscribersOnly(t *testing.T) {
 	s := testStore(t)
 	_, emailID := sentEmail(t, s)
-	subscribed, _ := s.CreateWebhook("subscribed", "https://recv.test/h", "sec", []string{EventEmailSent})
-	otherEvent, _ := s.CreateWebhook("other", "https://recv.test/h", "sec", []string{EventEmailFailed})
-	paused, _ := s.CreateWebhook("paused", "https://recv.test/h", "sec", []string{EventEmailSent})
-	if err := s.UpdateWebhook(paused.ID, paused.Name, paused.URL, paused.Events, false); err != nil {
+	subscribed, _ := s.CreateWebhook("subscribed", "https://recv.test/h", "sec", 0, []string{EventEmailSent})
+	otherEvent, _ := s.CreateWebhook("other", "https://recv.test/h", "sec", 0, []string{EventEmailFailed})
+	paused, _ := s.CreateWebhook("paused", "https://recv.test/h", "sec", 0, []string{EventEmailSent})
+	if err := s.UpdateWebhook(paused.ID, paused.Name, paused.URL, paused.DomainID, paused.Events, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,10 +102,64 @@ func TestEmailEventFansOutToSubscribersOnly(t *testing.T) {
 	}
 }
 
+// A domain-scoped endpoint only hears about its own domain; an unscoped one
+// hears about all of them.
+func TestEmailEventRespectsDomainScope(t *testing.T) {
+	s := testStore(t)
+	_, emailID := sentEmail(t, s) // on a.test
+	other, err := s.CreateDomain("b.test", "mail1", "PEM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sending, err := s.GetEmail(emailID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	all, _ := s.CreateWebhook("all", "https://recv.test/h", "sec", 0, []string{EventEmailSent})
+	own, _ := s.CreateWebhook("a only", "https://recv.test/h", "sec", sending.DomainID, []string{EventEmailSent})
+	foreign, _ := s.CreateWebhook("b only", "https://recv.test/h", "sec", other.ID, []string{EventEmailSent})
+
+	(&Dispatcher{Store: s}).EmailEvent(EventEmailSent, emailID)
+
+	for _, tc := range []struct {
+		hook *store.Webhook
+		want int
+	}{{all, 1}, {own, 1}, {foreign, 0}} {
+		got, err := s.ListWebhookDeliveries(tc.hook.ID, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != tc.want {
+			t.Errorf("%s: queued %d deliveries, want %d", tc.hook.Name, len(got), tc.want)
+		}
+	}
+}
+
+func TestDomainEventRespectsDomainScope(t *testing.T) {
+	s := testStore(t)
+	a, err := s.CreateDomain("a.test", "mail1", "PEM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := s.CreateDomain("b.test", "mail1", "PEM")
+	own, _ := s.CreateWebhook("a only", "https://recv.test/h", "sec", a.ID, []string{EventDomainUnverified})
+	foreign, _ := s.CreateWebhook("b only", "https://recv.test/h", "sec", b.ID, []string{EventDomainUnverified})
+
+	(&Dispatcher{Store: s}).DomainEvent(EventDomainUnverified, a.ID)
+
+	if got, _ := s.ListWebhookDeliveries(own.ID, 10); len(got) != 1 {
+		t.Errorf("the scoped endpoint queued %d deliveries, want 1", len(got))
+	}
+	if got, _ := s.ListWebhookDeliveries(foreign.ID, 10); len(got) != 0 {
+		t.Errorf("another domain's endpoint queued %d deliveries, want 0", len(got))
+	}
+}
+
 func TestEmailEventPayloadSnapshot(t *testing.T) {
 	s := testStore(t)
 	_, emailID := sentEmail(t, s)
-	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", []string{EventEmailSent})
+	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", 0, []string{EventEmailSent})
 
 	(&Dispatcher{Store: s}).EmailEvent(EventEmailSent, emailID)
 
@@ -150,7 +204,7 @@ func TestDomainEventPayload(t *testing.T) {
 	if err := s.SetDomainVerification(d.ID, true, true, true, store.Now()); err != nil {
 		t.Fatal(err)
 	}
-	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", []string{EventDomainVerified})
+	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", 0, []string{EventDomainVerified})
 
 	(&Dispatcher{Store: s}).DomainEvent(EventDomainVerified, d.ID)
 
@@ -184,7 +238,7 @@ func TestDomainEventPayload(t *testing.T) {
 func TestEmitWithoutSubscribersIsNoop(t *testing.T) {
 	s := testStore(t)
 	_, emailID := sentEmail(t, s)
-	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", []string{EventEmailFailed})
+	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", 0, []string{EventEmailFailed})
 
 	(&Dispatcher{Store: s}).EmailEvent(EventEmailSent, emailID)
 
@@ -197,7 +251,7 @@ func TestTickDeliversSignedPayload(t *testing.T) {
 	s := testStore(t)
 	_, emailID := sentEmail(t, s)
 	srv, cap := receiver(t, 200, "ok")
-	hook, _ := s.CreateWebhook("h", srv.URL, "whsec_test", []string{EventEmailSent})
+	hook, _ := s.CreateWebhook("h", srv.URL, "whsec_test", 0, []string{EventEmailSent})
 
 	d := &Dispatcher{Store: s, Client: srv.Client()}
 	d.EmailEvent(EventEmailSent, emailID)
@@ -259,7 +313,7 @@ func TestTickRetriesOn5xxThenExhausts(t *testing.T) {
 	s := testStore(t)
 	_, emailID := sentEmail(t, s)
 	srv, cap := receiver(t, 503, "unavailable")
-	hook, _ := s.CreateWebhook("h", srv.URL, "sec", []string{EventEmailSent})
+	hook, _ := s.CreateWebhook("h", srv.URL, "sec", 0, []string{EventEmailSent})
 
 	d := &Dispatcher{Store: s, Client: srv.Client()}
 	d.EmailEvent(EventEmailSent, emailID)
@@ -309,7 +363,7 @@ func TestTickGoneIsPermanent(t *testing.T) {
 	s := testStore(t)
 	_, emailID := sentEmail(t, s)
 	srv, cap := receiver(t, http.StatusGone, "stop")
-	hook, _ := s.CreateWebhook("h", srv.URL, "sec", []string{EventEmailSent})
+	hook, _ := s.CreateWebhook("h", srv.URL, "sec", 0, []string{EventEmailSent})
 
 	d := &Dispatcher{Store: s, Client: srv.Client()}
 	d.EmailEvent(EventEmailSent, emailID)
@@ -330,7 +384,7 @@ func TestTickGoneIsPermanent(t *testing.T) {
 // into an endless retry loop (or a POST to an empty URL).
 func TestDeletedEndpointMidFlight(t *testing.T) {
 	s := testStore(t)
-	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", []string{EventEmailSent})
+	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", 0, []string{EventEmailSent})
 	if _, err := s.EnqueueWebhookDelivery(&store.WebhookDelivery{
 		WebhookID: hook.ID, Event: EventEmailSent, Payload: "{}",
 	}); err != nil {
@@ -364,7 +418,7 @@ func (f failTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func TestTestEventQueuesDelivery(t *testing.T) {
 	s := testStore(t)
-	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", []string{EventEmailSent})
+	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", 0, []string{EventEmailSent})
 
 	d := &Dispatcher{Store: s}
 	if err := d.Test(hook.ID); err != nil {
@@ -397,7 +451,7 @@ func TestSystemEmailIsFlagged(t *testing.T) {
 	if err := s.MarkSent(id, store.Now()); err != nil {
 		t.Fatal(err)
 	}
-	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", []string{EventEmailSent})
+	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", 0, []string{EventEmailSent})
 
 	(&Dispatcher{Store: s}).EmailEvent(EventEmailSent, id)
 
@@ -424,7 +478,7 @@ func TestSystemEmailIsFlagged(t *testing.T) {
 // that subscribes to nothing at all.
 func TestTestEventIgnoresSubscriptions(t *testing.T) {
 	s := testStore(t)
-	hook, err := s.CreateWebhook("h", "https://recv.test/h", "sec", nil)
+	hook, err := s.CreateWebhook("h", "https://recv.test/h", "sec", 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +492,7 @@ func TestTestEventIgnoresSubscriptions(t *testing.T) {
 
 func TestTickPrunesOldHistoryOnce(t *testing.T) {
 	s := testStore(t)
-	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", []string{EventEmailSent})
+	hook, _ := s.CreateWebhook("h", "https://recv.test/h", "sec", 0, []string{EventEmailSent})
 	old := store.FmtTime(time.Now().Add(-30 * 24 * time.Hour))
 	id, _ := s.EnqueueWebhookDelivery(&store.WebhookDelivery{
 		WebhookID: hook.ID, Event: EventEmailSent, Payload: "{}", CreatedAt: old,

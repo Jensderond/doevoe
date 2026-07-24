@@ -8,7 +8,7 @@ import (
 
 func createTestWebhook(t *testing.T, s *Store, events ...string) *Webhook {
 	t.Helper()
-	w, err := s.CreateWebhook("hook", "https://recv.test/hook", "whsec_x", events)
+	w, err := s.CreateWebhook("hook", "https://recv.test/hook", "whsec_x", 0, events)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,15 @@ func TestWebhookRoundTrip(t *testing.T) {
 		t.Error("Subscribed must match exact event names")
 	}
 
-	if err := s.UpdateWebhook(w.ID, "renamed", "https://other.test/h", []string{"domain.verified"}, false); err != nil {
+	if !w.AllDomains() || !w.Scopes(42) {
+		t.Error("a webhook created with domain_id 0 must cover every domain")
+	}
+
+	d, err := s.CreateDomain("scoped.test", "mail1", "PEM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateWebhook(w.ID, "renamed", "https://other.test/h", d.ID, []string{"domain.verified"}, false); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetWebhook(w.ID)
@@ -37,6 +45,9 @@ func TestWebhookRoundTrip(t *testing.T) {
 	}
 	if got.Name != "renamed" || got.URL != "https://other.test/h" || got.Active {
 		t.Fatalf("after update: %+v", got)
+	}
+	if got.DomainID != d.ID || got.AllDomains() || !got.Scopes(d.ID) || got.Scopes(d.ID+1) {
+		t.Fatalf("scope after update: %+v", got)
 	}
 	if len(got.Events) != 1 || got.Events[0] != "domain.verified" {
 		t.Fatalf("events after update: %v", got.Events)
@@ -51,11 +62,11 @@ func TestListActiveWebhooksForEvent(t *testing.T) {
 	subscribed := createTestWebhook(t, s, "email.sent")
 	other := createTestWebhook(t, s, "email.failed")
 	paused := createTestWebhook(t, s, "email.sent")
-	if err := s.UpdateWebhook(paused.ID, paused.Name, paused.URL, paused.Events, false); err != nil {
+	if err := s.UpdateWebhook(paused.ID, paused.Name, paused.URL, paused.DomainID, paused.Events, false); err != nil {
 		t.Fatal(err)
 	}
 
-	hooks, err := s.ListActiveWebhooksForEvent("email.sent")
+	hooks, err := s.ListActiveWebhooksForEvent("email.sent", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,12 +81,50 @@ func TestListActiveWebhooksForEvent(t *testing.T) {
 func TestListActiveWebhooksForEventIsExact(t *testing.T) {
 	s := testStore(t)
 	createTestWebhook(t, s, "email.sent_to_archive")
-	hooks, err := s.ListActiveWebhooksForEvent("email.sent")
+	hooks, err := s.ListActiveWebhooksForEvent("email.sent", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(hooks) != 0 {
 		t.Fatalf("hooks = %+v, want none", hooks)
+	}
+}
+
+func TestListActiveWebhooksForEventScopesToDomain(t *testing.T) {
+	s := testStore(t)
+	a, err := s.CreateDomain("a.test", "mail1", "PEM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := s.CreateDomain("b.test", "mail1", "PEM")
+
+	all := createTestWebhook(t, s, "email.sent")
+	scopedA, err := s.CreateWebhook("a only", "https://recv.test/a", "sec", a.ID, []string{"email.sent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopedB, _ := s.CreateWebhook("b only", "https://recv.test/b", "sec", b.ID, []string{"email.sent"})
+
+	forA, err := s.ListActiveWebhooksForEvent("email.sent", a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forA) != 2 {
+		t.Fatalf("hooks for a.test = %+v, want the unscoped one and a's own", forA)
+	}
+	ids := map[int64]bool{forA[0].ID: true, forA[1].ID: true}
+	if !ids[all.ID] || !ids[scopedA.ID] || ids[scopedB.ID] {
+		t.Errorf("hooks for a.test = %v, want %d and %d", ids, all.ID, scopedA.ID)
+	}
+
+	forB, _ := s.ListActiveWebhooksForEvent("email.sent", b.ID)
+	if len(forB) != 2 {
+		t.Fatalf("hooks for b.test = %+v", forB)
+	}
+	// A domain with no scoped endpoint of its own still gets the unscoped one.
+	forOther, _ := s.ListActiveWebhooksForEvent("email.sent", b.ID+999)
+	if len(forOther) != 1 || forOther[0].ID != all.ID {
+		t.Fatalf("hooks for an unrelated domain = %+v, want only %d", forOther, all.ID)
 	}
 }
 

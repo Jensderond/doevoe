@@ -75,6 +75,9 @@ CREATE TABLE IF NOT EXISTS webhooks (
   name TEXT NOT NULL,
   url TEXT NOT NULL,
   secret TEXT NOT NULL,
+  -- Sending domain this endpoint is scoped to; 0 means all of them. No FK, for
+  -- the same reason as webhook_deliveries.email_id: 0 is a sentinel, not a row.
+  domain_id INTEGER NOT NULL DEFAULT 0,
   events TEXT NOT NULL DEFAULT '',
   active INTEGER NOT NULL DEFAULT 1,
   last_status INTEGER NOT NULL DEFAULT 0,
@@ -141,6 +144,9 @@ func migrate(db *sql.DB) error {
 	stmts := []string{
 		`ALTER TABLE emails ADD COLUMN from_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE emails ADD COLUMN to_name TEXT NOT NULL DEFAULT ''`,
+		// Webhooks predate per-domain scoping; existing endpoints default to
+		// 0 (all domains), which is the behaviour they already had.
+		`ALTER TABLE webhooks ADD COLUMN domain_id INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
