@@ -226,6 +226,10 @@ form.card label + label, form.card label + input { margin-top: .8rem; }
 .filters summary::-webkit-details-marker { display: none; }
 .filters summary::after { content: " +"; color: var(--blue); }
 .filters[open] summary::after { content: " –"; }
+/* The active window is spelled out on the closed summary: the list is
+   date-bounded by default, so "Filter" alone would hide that from view. */
+.filters .filter-state { text-transform: none; letter-spacing: 0; font-weight: 550; }
+.filters .filter-state::before { content: "· "; }
 .filters form {
   display: grid; gap: .7rem;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -234,6 +238,35 @@ form.card label + label, form.card label + input { margin-top: .8rem; }
 .filters form > label { min-width: 0; }
 .filters input, .filters select { min-width: 0; }
 .filters .wide, .filters button { grid-column: 1 / -1; }
+/* Mobile first: a native date input needs the full width to stay legible
+   (and tappable), so the two of them stack instead of sharing a row. */
+.filters .field-date { grid-column: 1 / -1; }
+.filters .field-hint {
+  grid-column: 1 / -1; margin: -.35rem 0 0;
+  font-size: .72rem; color: var(--muted);
+}
+.filters .field-hint strong { font-weight: 650; }
+/* ---- period bar (emails page) -------------------------------------------- */
+/* Outside the collapsible filter panel: switching period is the most common
+   thing to do on this page, so it's always one tap away. */
+.period-bar { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 .9rem; }
+.period-chip {
+  display: inline-flex; align-items: center; min-height: 40px;
+  padding: .3rem .8rem;
+  border: 1px solid var(--line); border-radius: 99px;
+  background: var(--card); text-decoration: none;
+  font-family: var(--font-mono); font-size: .8rem; font-weight: 600;
+  color: var(--muted);
+}
+a.period-chip:hover { border-color: var(--ink); color: var(--ink); }
+.period-chip.active {
+  border-color: var(--blue); color: light-dark(#fff, #0f141d);
+  background: var(--blue);
+}
+.filter-reset {
+  grid-column: 1 / -1; justify-self: start;
+  align-self: center; font-size: .8rem; font-weight: 600; color: var(--muted);
+}
 
 /* ---- detail fields ------------------------------------------------------- */
 .fields { margin: 0; display: grid; gap: .45rem; }
@@ -303,6 +336,8 @@ del { opacity: .55; }
   .filters form { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: end; }
   .filters .wide { grid-column: span 2; }
   .filters button { grid-column: auto; }
+  .filters .field-date { grid-column: auto; }
+  .filter-reset { grid-column: auto; }
   .row { padding: .85rem 1.15rem; }
   .row-top { gap: .7rem; }
   .fields > div { grid-template-columns: 6.5rem 1fr; }

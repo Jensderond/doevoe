@@ -4,9 +4,21 @@
   <a class="refresh" href="{{.CurrentURL}}">&#8635; Refresh</a>
 </div>
 
-<details class="filters" {{if or .Status .Query .From .To .DomainID}}open{{end}}>
-  <summary>Filter</summary>
-  <form method="get" action="/admin/emails">
+<nav class="period-bar" aria-label="Period">
+  {{range .Ranges}}
+    {{if .Active}}<span class="period-chip active" aria-current="true" title="{{.Title}}">{{.Label}}</span>
+    {{else}}<a class="period-chip" href="{{.URL}}" title="{{.Title}}">{{.Label}}</a>{{end}}
+  {{end}}
+  {{if eq .RangeKey "custom"}}<span class="period-chip active" aria-current="true">{{.WindowLabel}}</span>{{end}}
+</nav>
+
+<details class="filters" {{if .FiltersActive}}open{{end}}>
+  <summary>Filter{{with .FilterState}} <span class="filter-state">{{.}}</span>{{end}}</summary>
+  <form method="get" action="/admin/emails" class="filter-form">
+    <!-- Carries the period the page is showing, so applying a status or search
+         doesn't silently snap the list back to the default window. Typed dates
+         override it (see resolveEmailWindow). -->
+    <input type="hidden" name="range" value="{{.RangeKey}}">
     <label>Status
       <select name="status">
         <option value="">All</option>
@@ -26,9 +38,18 @@
     <label class="wide">Search
       <input type="search" name="q" value="{{.Query}}" placeholder="recipient or subject">
     </label>
-    <label>From <input type="date" name="from" value="{{.From}}"></label>
-    <label>To <input type="date" name="to" value="{{.To}}"></label>
+    <!-- The date inputs sit last: the period chips above cover the common
+         cases, and on a phone these would otherwise push status and search
+         below the fold. -->
+    <label class="field-date">From
+      <input type="date" name="from" value="{{.From}}">
+    </label>
+    <label class="field-date">To
+      <input type="date" name="to" value="{{.To}}">
+    </label>
+    <p class="field-hint">Either date switches the period to a custom range.</p>
     <button type="submit" class="primary">Apply filters</button>
+    {{if .FiltersActive}}<a class="filter-reset" href="/admin/emails">Reset</a>{{end}}
   </form>
 </details>
 
@@ -47,7 +68,7 @@
   {{with .LastError}}<div class="row-err">{{.}}</div>{{end}}
 </a>
 {{else}}
-<p class="empty">No emails match.</p>
+<p class="empty">No emails match{{if ne .RangeKey "all"}} in this period ({{.WindowLabel}}) &mdash; <a href="{{.AllTimeURL}}">search all time</a>{{end}}.</p>
 {{end}}
 </div>
 
