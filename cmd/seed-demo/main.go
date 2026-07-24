@@ -66,6 +66,12 @@ func main() {
 		case i%13 == 5:
 			s.RecordAttempt(id, 1, 421, "gmail-smtp-in.l.google.com", "421-4.7.0 Try again later", 380)
 			s.MarkRetry(id, "2026-07-21T09:00:00Z", "421-4.7.0 IP not in allowed range, try again later")
+		case i%17 == 7:
+			// A recipient domain with no reachable mail server, abandoned by the
+			// operator instead of waiting out the retry schedule.
+			s.RecordAttempt(id, 1, 0, "mx.typo-domain.invalid", "dial tcp :25: connect: connection refused", 5000)
+			s.MarkRetry(id, "2026-07-21T09:00:00Z", "dial tcp :25: connect: connection refused")
+			s.CancelEmail(id)
 		default:
 			s.RecordAttempt(id, 1, 250, "gmail-smtp-in.l.google.com", "250 2.0.0 OK", 245)
 			s.MarkSent(id, created[:11]+"12:00:00Z")

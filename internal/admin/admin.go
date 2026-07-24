@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -20,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"doevoe/internal/delivery"
 	"doevoe/internal/dkimkeys"
 	"doevoe/internal/dnscheck"
 	"doevoe/internal/store"
@@ -61,6 +63,7 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /admin/emails", a.auth(a.listEmails))
 	mux.Handle("GET /admin/emails/{id}", a.auth(a.showEmail))
 	mux.Handle("POST /admin/emails/{id}/retry", a.auth(a.retryEmail))
+	mux.Handle("POST /admin/emails/{id}/cancel", a.auth(a.cancelEmail))
 	mux.Handle("GET /admin/domains", a.auth(a.listDomains))
 	mux.Handle("POST /admin/domains", a.auth(a.createDomain))
 	mux.Handle("GET /admin/domains/{id}", a.auth(a.showDomain))
@@ -347,6 +350,22 @@ func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// retryable and cancelable mirror the store's status guards so the email page
+// only offers the actions the store would accept. The store's conditional
+// UPDATE remains the authority — it's what closes the read-then-write race
+// against the delivery worker — but checking here keeps an obviously-wrong
+// POST (retry a sent email, cancel a failed one) from reaching the DB and lets
+// the response say which status blocked it.
+func retryable(status string) bool {
+	switch status {
+	case "queued", "failed", "canceled":
+		return true
+	}
+	return false
+}
+
+func cancelable(status string) bool { return status == "queued" }
+
 func (a *Admin) showEmail(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	e, err := a.Store.GetEmail(id)
@@ -356,7 +375,12 @@ func (a *Admin) showEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	attempts, _ := a.Store.ListAttempts(id)
 	domain, _ := a.Store.GetDomain(e.DomainID)
-	a.render(w, r, "email", map[string]any{"Email": e, "Attempts": attempts, "Domain": domain})
+	a.render(w, r, "email", map[string]any{"Email": e, "Attempts": attempts, "Domain": domain,
+		"CanRetry": retryable(e.Status), "CanCancel": cancelable(e.Status),
+		// The recipient input is pre-filled with the same "Name <addr>" form the
+		// outgoing To header uses, so an unchanged submit round-trips the display
+		// name instead of dropping it.
+		"Recipient": delivery.FormatAddress(e.ToName, e.To)})
 }
 
 func (a *Admin) retryEmail(w http.ResponseWriter, r *http.Request) {
@@ -366,25 +390,59 @@ func (a *Admin) retryEmail(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if e.Status != "failed" {
-		http.Error(w, "only failed emails can be retried", 409)
+	if !retryable(e.Status) {
+		http.Error(w, "a "+e.Status+" email cannot be retried", 409)
 		return
 	}
-	newTo := strings.TrimSpace(r.FormValue("to"))
-	if newTo != "" {
-		if _, err := mail.ParseAddress(newTo); err != nil {
+	// The submitted recipient is split into routing address + display name:
+	// to_addr must stay a bare address (it drives MX routing and the SMTP
+	// envelope), so a pasted "Name <addr>" never lands there whole.
+	var newTo, newToName string
+	if v := strings.TrimSpace(r.FormValue("to")); v != "" {
+		addr, err := mail.ParseAddress(v)
+		if err != nil {
 			http.Error(w, "invalid address", 422)
 			return
 		}
-		if newTo == e.To {
-			newTo = "" // unchanged: plain retry
+		if addr.Address != e.To || addr.Name != e.ToName {
+			newTo, newToName = addr.Address, addr.Name
 		}
 	}
-	if err := a.Store.RequeueEmail(id, newTo); err != nil {
-		http.Error(w, err.Error(), 500)
+	if err := a.Store.RequeueEmail(id, newTo, newToName); err != nil {
+		a.emailActionError(w, err, store.ErrNotRequeueable, "retried")
 		return
 	}
 	http.Redirect(w, r, "/admin/emails/"+r.PathValue("id"), http.StatusSeeOther)
+}
+
+func (a *Admin) cancelEmail(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	e, err := a.Store.GetEmail(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !cancelable(e.Status) {
+		http.Error(w, "only a queued email can be canceled; this one is "+e.Status, 409)
+		return
+	}
+	if err := a.Store.CancelEmail(id); err != nil {
+		a.emailActionError(w, err, store.ErrNotCancelable, "canceled")
+		return
+	}
+	http.Redirect(w, r, "/admin/emails/"+r.PathValue("id"), http.StatusSeeOther)
+}
+
+// emailActionError turns a store status-guard rejection into a 409 the operator
+// can act on: reaching it after the handler's own status check passed means a
+// worker claimed the email in the meantime, and trying again shortly will work.
+func (a *Admin) emailActionError(w http.ResponseWriter, err, guard error, verb string) {
+	if errors.Is(err, guard) {
+		http.Error(w, "the email was picked up for delivery a moment ago and cannot be "+
+			verb+" while it is sending; try again shortly", 409)
+		return
+	}
+	http.Error(w, err.Error(), 500)
 }
 
 func (a *Admin) listDomains(w http.ResponseWriter, r *http.Request) {

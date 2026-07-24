@@ -8,8 +8,11 @@ type DayCount struct {
 }
 
 type Summary struct {
-	Sent, Failed, Queued, Total int
-	SuccessRate                 float64 // 0..100; 0 when Total == 0
+	Sent, Failed, Queued, Canceled, Total int
+	// SuccessRate is 0..100, computed over Total-Canceled (0 when that is 0):
+	// a canceled email never got a delivery verdict, so counting it as a
+	// non-success would make an operator's own cancel look like a failure.
+	SuccessRate float64
 }
 
 // DailyVolume returns per-day sent/failed counts for emails created in the
@@ -45,14 +48,15 @@ func (s *Store) SummaryStats(from, to string) (Summary, error) {
 		COALESCE(SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN status IN ('queued','sending') THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status='canceled' THEN 1 ELSE 0 END), 0),
 		COUNT(*)
 		FROM emails WHERE created_at >= ? AND created_at < ?`, from, to).
-		Scan(&sm.Sent, &sm.Failed, &sm.Queued, &sm.Total)
+		Scan(&sm.Sent, &sm.Failed, &sm.Queued, &sm.Canceled, &sm.Total)
 	if err != nil {
 		return Summary{}, err
 	}
-	if sm.Total > 0 {
-		sm.SuccessRate = float64(sm.Sent) / float64(sm.Total) * 100
+	if rated := sm.Total - sm.Canceled; rated > 0 {
+		sm.SuccessRate = float64(sm.Sent) / float64(rated) * 100
 	}
 	return sm, nil
 }

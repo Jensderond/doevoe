@@ -48,7 +48,11 @@ struct fields, not interfaces/DI framework):
 - **`internal/admin`** — server-rendered HTML admin UI (`html/template`, embedded
   `templates/*.html` + `static/*`), single-admin-password auth with a random session token
   cookie (`SameSite=Lax`, no CSRF token — see v1 scope notes in README). Owns domain
-  create/verify, API key create/revoke, and the email list/detail/retry views.
+  create/verify, API key create/revoke, and the email list/detail/retry/cancel views.
+  The retry/cancel status rules live in one place per layer: `retryable`/`cancelable`
+  in `admin.go` decide what the page offers, and the store's conditional UPDATEs
+  (`RequeueEmail`/`CancelEmail`, guarded on status) are the authority that keeps
+  either action from racing a worker mid-send.
 - **`internal/delivery`** — the sending pipeline:
   - `worker.go`: polls `store.ClaimDue` on a ticker, delivers concurrently with a
     per-recipient-domain concurrency limit (semaphore per domain), recovers panics per-email

@@ -115,16 +115,74 @@ func (s *Store) MarkFailed(id int64, errMsg string) error {
 	return err
 }
 
-func (s *Store) RequeueEmail(id int64, newTo string) error {
-	if newTo != "" {
-		_, err := s.db.Exec(`UPDATE emails SET
-			original_to = CASE WHEN original_to='' THEN to_addr ELSE original_to END,
-			to_addr=?, status='queued', attempts=0, next_attempt_at=?, last_error='' WHERE id=?`,
-			newTo, Now(), id)
+// ErrNotCancelable and ErrNotRequeueable report that a cancel or a requeue was
+// refused because the email's status doesn't allow it — including the case where
+// a worker claimed the email (status 'sending') in between the caller's GetEmail
+// and its write. Both operations therefore keep their status guard inside the
+// UPDATE's WHERE clause instead of trusting a prior read: an email that is
+// mid-delivery must never be yanked out from under the worker, since the worker
+// would still write its own outcome (MarkSent/MarkRetry/MarkFailed) afterwards
+// and either clobber the admin's change or resurrect a canceled email. Because
+// db.SetMaxOpenConns(1) serializes writers, one of the two statements always
+// runs first and the loser sees zero affected rows.
+var (
+	ErrNotCancelable  = errors.New("only a queued email can be canceled")
+	ErrNotRequeueable = errors.New("email cannot be requeued in its current status")
+)
+
+// CancelEmail stops the remaining delivery attempts for a queued email: it
+// leaves last_error and next_attempt_at untouched (so the admin UI can still
+// show which failure prompted the cancel, and when the abandoned attempt was
+// due) and simply moves the row out of the status ClaimDue selects on. Only
+// 'queued' is cancelable — 'sending' is in flight (see above), while
+// 'sent'/'failed'/'canceled' have no pending attempt left to stop.
+func (s *Store) CancelEmail(id int64) error {
+	res, err := s.db.Exec(`UPDATE emails SET status='canceled' WHERE id=? AND status='queued'`, id)
+	if err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`UPDATE emails SET status='queued', attempts=0, next_attempt_at=?, last_error='' WHERE id=?`, Now(), id)
-	return err
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotCancelable
+	}
+	return nil
+}
+
+// requeueGuard limits admin-initiated retries to the statuses where re-sending
+// is meaningful and safe: 'failed' (retries exhausted), 'canceled' (resumed
+// after the operator fixed something) and 'queued' (send it now instead of
+// waiting out the backoff). 'sending' is excluded to avoid racing a worker
+// mid-delivery, and 'sent' so a delivered email is never sent a second time.
+const requeueGuard = ` AND status IN ('queued','failed','canceled')`
+
+// RequeueEmail puts an email back on the queue, optionally re-addressing it to
+// newTo (with newToName as the display name; both are ignored when newTo is
+// empty). newTo must be a bare routing address — never a "Name <addr>" string,
+// which would break MX routing and the envelope.
+//
+// attempts is reset to 0 so the email gets the full backoff schedule again: an
+// admin retry is a fresh delivery, not a continuation of the exhausted one.
+// original_to keeps whatever address the email was first sent to, so the detail
+// page can show what the recipient was corrected from; it's only recorded when
+// the address actually changes (a display-name-only edit isn't a re-addressing).
+func (s *Store) RequeueEmail(id int64, newTo, newToName string) error {
+	var res sql.Result
+	var err error
+	if newTo != "" {
+		res, err = s.db.Exec(`UPDATE emails SET
+			original_to = CASE WHEN original_to='' AND to_addr<>? THEN to_addr ELSE original_to END,
+			to_addr=?, to_name=?, status='queued', attempts=0, next_attempt_at=?, last_error='' WHERE id=?`+requeueGuard,
+			newTo, newTo, newToName, Now(), id)
+	} else {
+		res, err = s.db.Exec(`UPDATE emails SET status='queued', attempts=0, next_attempt_at=?, last_error='' WHERE id=?`+requeueGuard,
+			Now(), id)
+	}
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotRequeueable
+	}
+	return nil
 }
 
 type EmailFilter struct {

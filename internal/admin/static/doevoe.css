@@ -164,6 +164,9 @@ p.empty { padding: 1rem; }
 .chip.queued, .chip.sending, .badge.queued, .badge.sending {
   color: var(--amber); background: color-mix(in srgb, var(--amber) 14%, transparent);
 }
+.chip.canceled, .badge.canceled {
+  color: var(--muted); background: color-mix(in srgb, var(--muted) 12%, transparent);
+}
 
 /* ---- forms -------------------------------------------------------------- */
 label { display: block; font-size: .8rem; font-weight: 550; color: var(--muted); }
@@ -197,6 +200,10 @@ button.link {
   font-weight: 500; font-size: .9rem; color: var(--muted);
 }
 button.link:hover { color: var(--ink); }
+button.danger {
+  color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent);
+}
+button.danger:hover { border-color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
 :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .9rem; }
 form.card label + label, form.card label + input { margin-top: .8rem; }
