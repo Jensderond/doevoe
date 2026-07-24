@@ -246,32 +246,23 @@ form.card label + label, form.card label + input { margin-top: .8rem; }
   font-size: .72rem; color: var(--muted);
 }
 .filters .field-hint strong { font-weight: 650; }
-.filters .period { grid-column: 1 / -1; border: 0; padding: 0; margin: 0; min-width: 0; }
-.filters .period legend {
-  padding: 0; font-size: .8rem; font-weight: 550; color: var(--muted);
-}
-.filters .chips { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .35rem; }
-.chip-opt { display: inline-flex; }
-.chip-opt input {
-  position: absolute; width: 1px; height: 1px; margin: 0;
-  opacity: 0; pointer-events: none;
-}
-.chip-opt span {
+/* ---- period bar (emails page) -------------------------------------------- */
+/* Outside the collapsible filter panel: switching period is the most common
+   thing to do on this page, so it's always one tap away. */
+.period-bar { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 .9rem; }
+.period-chip {
   display: inline-flex; align-items: center; min-height: 40px;
-  padding: .3rem .8rem; cursor: pointer;
+  padding: .3rem .8rem;
   border: 1px solid var(--line); border-radius: 99px;
-  background: var(--card);
+  background: var(--card); text-decoration: none;
   font-family: var(--font-mono); font-size: .8rem; font-weight: 600;
   color: var(--muted);
 }
-.chip-opt:hover span { border-color: var(--ink); color: var(--ink); }
-/* Keyed off :checked, not a server-rendered class, so the highlight follows
-   the radio even before the form is submitted (see static/filters.js). */
-.chip-opt:has(input:checked) span {
+a.period-chip:hover { border-color: var(--ink); color: var(--ink); }
+.period-chip.active {
   border-color: var(--blue); color: light-dark(#fff, #0f141d);
   background: var(--blue);
 }
-.chip-opt:has(input:focus-visible) span { outline: 2px solid var(--blue); outline-offset: 2px; }
 .filter-reset {
   grid-column: 1 / -1; justify-self: start;
   align-self: center; font-size: .8rem; font-weight: 600; color: var(--muted);

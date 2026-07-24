@@ -132,8 +132,8 @@ func TestDateRangeFilter(t *testing.T) {
 		s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: to, Subject: "s", BodyText: "b", CreatedAt: day})
 	}
 
-	// A bare from/to pair (no range param) still means a custom range, so
-	// links bookmarked before the period chips existed keep working.
+	// Dates win over any period, which is what makes filling them in switch to
+	// a custom range — and keeps pre-existing ?from=&to= links working.
 	resp, _ := c.Get(srv.URL + "/admin/emails?from=2026-07-05&to=2026-07-10")
 	body := readBody(t, resp)
 	if !strings.Contains(body, "mid@dest.test") {
@@ -143,20 +143,24 @@ func TestDateRangeFilter(t *testing.T) {
 		t.Error("emails outside the date range should not be shown")
 	}
 
-	// The submitted values must round-trip into the form inputs, with the
-	// Custom chip selected so they visibly apply.
+	// The submitted values round-trip into the form inputs, and the period bar
+	// shows the custom window instead of a preset.
 	if !strings.Contains(body, `value="2026-07-05"`) || !strings.Contains(body, `value="2026-07-10"`) {
 		t.Error("date inputs should retain the submitted values")
 	}
-	if !strings.Contains(body, `value="custom" checked`) {
-		t.Errorf("dates should select the Custom period chip:\n%s", body)
+	if !strings.Contains(body, "2026-07-05 → 2026-07-10") {
+		t.Errorf("period bar should show the custom window:\n%s", body)
+	}
+	if !strings.Contains(body, `name="range" value="custom"`) {
+		t.Errorf("the form should carry the custom period forward:\n%s", body)
 	}
 
-	// The same window picked explicitly via the Custom chip.
-	resp, _ = c.Get(srv.URL + "/admin/emails?range=custom&from=2026-07-05&to=2026-07-10")
+	// A preset arriving alongside dates (hand-edited URL, or the filter form
+	// submitting its hidden period with dates filled in) still means custom.
+	resp, _ = c.Get(srv.URL + "/admin/emails?range=30d&from=2026-07-05&to=2026-07-10")
 	if body = readBody(t, resp); !strings.Contains(body, "mid@dest.test") ||
 		strings.Contains(body, "early@dest.test") {
-		t.Errorf("range=custom should use the submitted dates:\n%s", body)
+		t.Errorf("dates should win over the submitted period:\n%s", body)
 	}
 
 	// Unparseable dates don't error; with no usable bound left, the list falls
@@ -195,8 +199,22 @@ func TestDefaultAndPresetRanges(t *testing.T) {
 	if strings.Contains(body, "stale@dest.test") {
 		t.Error("default window should not show a 40-day-old email")
 	}
-	if !strings.Contains(body, "Last 7 days") || !strings.Contains(body, `value="7d" checked`) {
-		t.Errorf("default window should be labeled and its chip selected:\n%s", body)
+	// The period chips are always on the page (not behind the filter panel),
+	// with the active one inert and the rest linking to their window.
+	if !strings.Contains(body, `<span class="period-chip active" aria-current="true" title="Last 7 days">7d</span>`) {
+		t.Errorf("the active period chip should be marked, not a link:\n%s", body)
+	}
+	chips := regexp.MustCompile(`<a class="period-chip" href="([^"]+)"`).FindAllStringSubmatch(body, -1)
+	if len(chips) != len(emailRanges)-1 { // every preset but the active one
+		t.Errorf("want %d period chip links, got %d:\n%s", len(emailRanges)-1, len(chips), body)
+	}
+	for _, want := range []string{"range=1d", "range=30d", "range=90d", "range=all"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("period bar should link to %s:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "<details class=\"filters\" open>") {
+		t.Error("the filter panel should stay closed when only the period is set")
 	}
 
 	for _, tc := range []struct {
@@ -207,8 +225,7 @@ func TestDefaultAndPresetRanges(t *testing.T) {
 		{"?range=30d", []string{"fresh@dest.test", "recent@dest.test"}, []string{"stale@dest.test"}},
 		{"?range=90d", []string{"fresh@dest.test", "stale@dest.test"}, nil},
 		{"?range=all", []string{"fresh@dest.test", "recent@dest.test", "stale@dest.test"}, nil},
-		// A preset supersedes leftover dates, and junk falls back to the default.
-		{"?range=all&from=2026-07-05&to=2026-07-10", []string{"stale@dest.test"}, nil},
+		// Junk, and a custom period with nothing to bound it, fall back to the default.
 		{"?range=banana", []string{"fresh@dest.test"}, []string{"stale@dest.test"}},
 		{"?range=custom", []string{"fresh@dest.test"}, []string{"stale@dest.test"}},
 	} {

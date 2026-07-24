@@ -156,12 +156,16 @@ An email's status is one of `queued`, `sending`, `sent`, `failed`, or
 ### Browsing the email list
 
 `/admin/emails` opens on the **last 7 days**. The period chips (`24h`, `7d`,
-`30d`, `90d`, `All`, `Custom`) switch that window, and the active one is
-spelled out on the collapsed filter header so a bounded list never looks like
-the whole table. `Custom` is what makes the *From*/*To* date fields count —
-picking any other chip clears them. The window travels with the status,
-domain and search filters through pagination links, and the empty state links
-straight to the same query over all time.
+`30d`, `90d`, `All`) sit above the filter panel rather than inside it, so
+switching window is always one tap and a bounded list never looks like the
+whole table. They're plain links that keep the status, domain and search
+filters.
+
+Filling in either of the panel's *From*/*To* dates switches the period to a
+custom range, which the chip row then shows in place of a preset; picking a
+chip again clears the dates. The window travels with the other filters through
+pagination links, and the empty state links straight to the same query over
+all time.
 
 ### Retrying and cancelling from the admin UI
 
