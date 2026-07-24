@@ -268,6 +268,144 @@ func TestRetryNotFound(t *testing.T) {
 	}
 }
 
+func TestCancelQueuedEmail(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id, _ := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: "u@dest.test", Subject: "s", BodyText: "b"})
+	s.MarkRetry(id, "2099-01-01T00:00:00Z", "dial tcp :25: connect: connection refused")
+
+	// The queued email offers both actions on its detail page.
+	resp, _ := c.Get(srv.URL + "/admin/emails/" + strconv.FormatInt(id, 10))
+	body := readBody(t, resp)
+	for _, want := range []string{"/cancel", "Stop retrying", "/retry"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("queued email detail missing %q", want)
+		}
+	}
+
+	resp, err := c.PostForm(srv.URL+"/admin/emails/"+strconv.FormatInt(id, 10)+"/cancel", url.Values{})
+	if err != nil || resp.StatusCode != 303 {
+		t.Fatalf("cancel: %v %d", err, resp.StatusCode)
+	}
+	e, _ := s.GetEmail(id)
+	if e.Status != "canceled" || e.LastError == "" {
+		t.Fatalf("after cancel: %+v", e)
+	}
+
+	// A canceled email keeps its retry form (so the recipient can be fixed
+	// and delivery resumed) but no longer offers a cancel.
+	resp, _ = c.Get(srv.URL + "/admin/emails/" + strconv.FormatInt(id, 10))
+	body = readBody(t, resp)
+	if !strings.Contains(body, "/retry") {
+		t.Error("canceled email should still offer a retry")
+	}
+	if strings.Contains(body, "Stop retrying") {
+		t.Error("canceled email should not offer another cancel")
+	}
+}
+
+func TestCancelStatusGuardAndNotFound(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id, _ := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: "u@dest.test", Subject: "s", BodyText: "b"})
+	s.MarkSent(id, "2026-07-01T00:00:00Z")
+
+	resp, _ := c.PostForm(srv.URL+"/admin/emails/"+strconv.FormatInt(id, 10)+"/cancel", url.Values{})
+	if resp.StatusCode != 409 {
+		t.Fatalf("cancel on sent email should return 409, got %d", resp.StatusCode)
+	}
+	if e, _ := s.GetEmail(id); e.Status != "sent" {
+		t.Fatalf("email should still be sent, got %s", e.Status)
+	}
+
+	resp, _ = c.PostForm(srv.URL+"/admin/emails/99999/cancel", url.Values{})
+	if resp.StatusCode != 404 {
+		t.Fatalf("cancel on missing email should return 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestRetryQueuedEmailWithNewRecipient(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id, _ := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: "u@wrong.test", Subject: "s", BodyText: "b"})
+	s.MarkRetry(id, "2099-01-01T00:00:00Z", "dial tcp :25: connect: connection refused")
+
+	// Still retrying on a wrong domain: fix the address without waiting out the backoff.
+	resp, err := c.PostForm(srv.URL+"/admin/emails/"+strconv.FormatInt(id, 10)+"/retry",
+		url.Values{"to": {"u@right.test"}})
+	if err != nil || resp.StatusCode != 303 {
+		t.Fatalf("retry queued: %v %d", err, resp.StatusCode)
+	}
+	e, _ := s.GetEmail(id)
+	if e.To != "u@right.test" || e.OriginalTo != "u@wrong.test" || e.Attempts != 0 || e.LastError != "" {
+		t.Fatalf("after retry of queued email: %+v", e)
+	}
+}
+
+func TestRetryCanceledEmail(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id, _ := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: "u@dest.test", Subject: "s", BodyText: "b"})
+	if err := s.CancelEmail(id); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, _ := c.PostForm(srv.URL+"/admin/emails/"+strconv.FormatInt(id, 10)+"/retry", url.Values{"to": {"u@dest.test"}})
+	if resp.StatusCode != 303 {
+		t.Fatalf("retry canceled email should redirect, got %d", resp.StatusCode)
+	}
+	if e, _ := s.GetEmail(id); e.Status != "queued" {
+		t.Fatalf("canceled email should be queued again, got %s", e.Status)
+	}
+}
+
+// A pasted "Name <addr>" recipient must be split: to_addr stays the bare
+// routing address (it drives MX lookup and the SMTP envelope) and the display
+// name goes to to_name.
+func TestRetrySplitsDisplayNameFromAddress(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id, _ := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: "u@gmial.com", Subject: "s", BodyText: "b"})
+	s.MarkFailed(id, "550")
+
+	resp, _ := c.PostForm(srv.URL+"/admin/emails/"+strconv.FormatInt(id, 10)+"/retry",
+		url.Values{"to": {"Jens Derond <u@gmail.com>"}})
+	if resp.StatusCode != 303 {
+		t.Fatalf("retry: %d", resp.StatusCode)
+	}
+	e, _ := s.GetEmail(id)
+	if e.To != "u@gmail.com" || e.ToName != "Jens Derond" {
+		t.Fatalf("recipient not split: to_addr=%q to_name=%q", e.To, e.ToName)
+	}
+
+	// The detail page pre-fills the input with the full form so an unchanged
+	// resubmit doesn't drop the display name.
+	resp, _ = c.Get(srv.URL + "/admin/emails/" + strconv.FormatInt(id, 10))
+	if body := readBody(t, resp); !strings.Contains(body, "&#34;Jens Derond&#34; &lt;u@gmail.com&gt;") {
+		t.Errorf("recipient input should be pre-filled with the display form:\n%s", body)
+	}
+}
+
+func TestCanceledStatusFilter(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id, _ := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: "gone@dest.test", Subject: "s", BodyText: "b"})
+	s.CancelEmail(id)
+	_, _ = s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: "live@dest.test", Subject: "s", BodyText: "b"})
+
+	resp, _ := c.Get(srv.URL + "/admin/emails?status=canceled")
+	body := readBody(t, resp)
+	if !strings.Contains(body, "gone@dest.test") || strings.Contains(body, "live@dest.test") {
+		t.Errorf("canceled filter not applied:\n%s", body)
+	}
+}
+
 func TestRetryStatusGuard(t *testing.T) {
 	s, srv, c := adminFixture(t)
 	login(t, srv, c, "hunter2")

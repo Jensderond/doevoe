@@ -148,8 +148,35 @@ connection errors) is retried on a fixed backoff schedule, in order:
 `1m → 5m → 15m → 1h → 4h → 12h → 24h`
 
 After the 24-hour attempt fails, the email is marked permanently failed and
-no further attempts are made — retry manually from `/admin/emails/{id}` if
-appropriate (optionally editing the recipient address first).
+no further attempts are made.
+
+An email's status is one of `queued`, `sending`, `sent`, `failed`, or
+`canceled` (the API's `GET /api/v1/emails/{id}` reports the same values).
+
+### Retrying and cancelling from the admin UI
+
+`/admin/emails/{id}` can intervene on an email that isn't currently being
+delivered — i.e. anything `queued` (still waiting out its backoff), `failed`
+(retries exhausted), or `canceled`:
+
+- **Retry now** re-queues it for immediate delivery and restarts the backoff
+  schedule from the first attempt.
+- **Recipient** can be edited before retrying, which is the fix for a wrong
+  or typo'd recipient domain — e.g. an error like
+  `dial tcp :25: connect: connection refused` usually means the recipient's
+  domain has no reachable mail server, so retrying the same address will just
+  fail again. The original address is kept and shown struck through on the
+  detail page. A `"Name <addr>"` display name is accepted here and stored
+  separately from the routing address.
+- **Stop retrying** (queued emails only) abandons the remaining attempts
+  without deleting anything: the email keeps its last error, and you can
+  still correct the recipient and retry it later. Canceled emails are
+  excluded from the dashboard's success rate, since they never got a delivery
+  verdict.
+
+An email that a worker is actively sending can't be retried or cancelled —
+that would risk a double delivery — so those actions answer `409` for the
+duration of the send.
 
 ## Notifications
 

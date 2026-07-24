@@ -12,19 +12,26 @@
     <div><dt>Domain</dt><dd>{{.Domain.Name}}</dd></div>
     <div><dt>Created</dt><dd>{{.Email.CreatedAt}}</dd></div>
     {{with .Email.SentAt}}<div><dt>Sent</dt><dd>{{.}}</dd></div>{{end}}
+    {{if eq .Email.Status "queued"}}<div><dt>Retry at</dt><dd>{{.Email.NextAttemptAt}}</dd></div>{{end}}
     {{with .Email.LastError}}<div class="is-error"><dt>Last error</dt><dd>{{.}}</dd></div>{{end}}
   </dl>
   <h2 class="subject-line">{{.Email.Subject}}</h2>
   {{with .Email.BodyText}}<pre class="mono-block">{{.}}</pre>{{end}}
 </section>
 
-{{if eq .Email.Status "failed"}}
+{{if .CanRetry}}
 <h2 class="section-title">Retry</h2>
+<p class="lede">Edit the recipient to fix a typo or a wrong domain; retrying starts the backoff schedule
+   over.{{if .CanCancel}} Stopping keeps the email but makes no further attempts &mdash; you can still
+   fix it and retry later.{{end}}</p>
 <form method="post" action="/admin/emails/{{.Email.ID}}/retry" class="card" hx-boost="false">
-  <label>Recipient (edit to fix a typo, leave as-is to retry unchanged)
-    <input name="to" value="{{.Email.To}}">
-  </label>
-  <div class="actions"><button type="submit" class="primary">Retry now</button></div>
+  <label>Recipient <input name="to" value="{{.Recipient}}"></label>
+  <div class="actions">
+    <button type="submit" class="primary">Retry now</button>
+    {{if .CanCancel}}
+    <button type="submit" class="danger" formaction="/admin/emails/{{.Email.ID}}/cancel">Stop retrying</button>
+    {{end}}
+  </div>
 </form>
 {{end}}
 

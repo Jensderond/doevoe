@@ -55,6 +55,37 @@ func TestSummaryStats(t *testing.T) {
 	}
 }
 
+func TestSummaryStatsExcludesCanceledFromRate(t *testing.T) {
+	s := testStore(t)
+	d, _ := s.CreateDomain("a.test", "mail1", "pk")
+	insertEmail(t, s, d.ID, "sent", "2026-07-01T10:00:00Z", "")
+	insertEmail(t, s, d.ID, "canceled", "2026-07-01T10:00:00Z", "connection refused")
+	sm, err := s.SummaryStats("2026-07-01T00:00:00Z", "2026-08-01T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sm.Canceled != 1 || sm.Total != 2 {
+		t.Errorf("summary = %+v", sm)
+	}
+	// The operator's own cancel must not read as a delivery failure.
+	if sm.SuccessRate != 100 {
+		t.Errorf("success rate = %v, want 100 (canceled excluded from the denominator)", sm.SuccessRate)
+	}
+}
+
+func TestSummaryStatsAllCanceledNoDivideByZero(t *testing.T) {
+	s := testStore(t)
+	d, _ := s.CreateDomain("a.test", "mail1", "pk")
+	insertEmail(t, s, d.ID, "canceled", "2026-07-01T10:00:00Z", "")
+	sm, err := s.SummaryStats("2026-07-01T00:00:00Z", "2026-08-01T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sm.Total != 1 || sm.SuccessRate != 0 {
+		t.Errorf("all-canceled summary = %+v", sm)
+	}
+}
+
 func TestSummaryStatsEmptyNoDivideByZero(t *testing.T) {
 	s := testStore(t)
 	sm, err := s.SummaryStats("2026-07-01T00:00:00Z", "2026-08-01T00:00:00Z")
