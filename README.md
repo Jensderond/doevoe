@@ -7,8 +7,9 @@
 doevoe is a self-hosted transactional email API: point your app at it and it
 queues, signs (DKIM), delivers, and retries mail directly to recipient MX
 servers — no third-party ESP, no per-email fee. It ships as a single Go
-binary with an embedded SQLite store, a JSON send/status API, and a
-mobile-friendly admin UI for domain setup, API keys, and delivery logs.
+binary with an embedded SQLite store, a JSON send/status API, signed webhooks
+for delivery events, and a mobile-friendly admin UI for domain setup, API
+keys, and delivery logs.
 
 ## Hard requirements
 
@@ -179,6 +180,101 @@ verified for notifications to actually go out) in these cases:
 All of the above run on a one-minute internal ticker; none of it blocks
 sending.
 
+## Webhooks
+
+`/admin/webhooks` configures HTTP endpoints that doevoe POSTs events to, so
+your app can react to a delivery outcome without polling
+`GET /api/v1/emails/{id}`. Each endpoint subscribes to one or more events,
+gets its own signing secret, and can be paused or sent a test event from its
+detail page.
+
+| Event | Fires when |
+|---|---|
+| `email.sent` | The recipient's MX server accepted the message |
+| `email.failed` | The email failed permanently (a 5xx, or the retry schedule ran out) |
+| `domain.verified` | A domain's SPF, DKIM and DMARC all check out — sending is unblocked |
+| `domain.unverified` | A verified domain lost a record — its sends now fail with 403 |
+
+The two `domain.*` events fire on a *change* only, whether the check came from
+the Verify button or the hourly re-check, so a healthy domain doesn't produce
+an event every hour. A DNS blip (an indeterminate resolver answer) changes
+nothing and reports nothing.
+
+The body is `application/json`:
+
+```json
+{
+  "event": "email.sent",
+  "created_at": "2026-07-24T19:18:22Z",
+  "data": {
+    "email": {
+      "id": 42, "status": "sent", "domain": "client.example",
+      "from": "hello@client.example", "to": "user@dest.example",
+      "subject": "Your receipt", "attempts": 1,
+      "created_at": "2026-07-24T19:18:20Z", "sent_at": "2026-07-24T19:18:22Z"
+    }
+  }
+}
+```
+
+`domain.*` events carry `data.domain` instead (`id`, `name`, `verified`,
+`spf_verified`, `dkim_verified`, `dmarc_verified`, `last_checked_at`).
+
+doevoe's own notification mail (failure digests, monthly stats) goes through
+the same queue, so it produces the same `email.*` events — those payloads carry
+`"system": true` in `data.email`, so you can ignore them if you only care about
+your app's traffic.
+
+Every request carries:
+
+| Header | Meaning |
+|---|---|
+| `X-Doevoe-Event` | Event name, same as `event` in the body |
+| `X-Doevoe-Delivery` | Delivery id — stable across retries, so use it to de-duplicate |
+| `X-Doevoe-Attempt` | 1-based attempt number |
+| `X-Doevoe-Timestamp` | Unix seconds, stamped per attempt |
+| `X-Doevoe-Signature` | `sha256=<hex HMAC-SHA256 of "<timestamp>.<raw body>", keyed with the endpoint's secret>` |
+
+Verify it over the **raw** body, before any JSON parsing:
+
+```ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+export async function POST(req: Request) {
+  const raw = await req.text();
+  const ts = req.headers.get("x-doevoe-timestamp")!;
+  const expected = "sha256=" + createHmac("sha256", process.env.DOEVOE_WEBHOOK_SECRET!)
+    .update(`${ts}.${raw}`).digest("hex");
+  const got = req.headers.get("x-doevoe-signature") ?? "";
+  if (got.length !== expected.length ||
+      !timingSafeEqual(Buffer.from(got), Buffer.from(expected))) {
+    return new Response("bad signature", { status: 401 });
+  }
+  // Reject anything older than a few minutes to kill replays.
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) {
+    return new Response("stale", { status: 401 });
+  }
+  const { event, data } = JSON.parse(raw);
+  // ... handle the event, then answer 2xx
+  return new Response("ok");
+}
+```
+
+Any 2xx is success. A `410 Gone` is taken as "stop sending me this" and fails
+the delivery immediately; every other response (and any timeout or connection
+error) is retried on a schedule of
+
+`30s → 2m → 10m → 30m → 2h`
+
+for six attempts in total, after which the delivery is marked failed. Each
+attempt has a 10-second timeout, redirects are not followed, and the payload
+is snapshotted when the event happens — a retry replays the original event,
+not the email's state at retry time. Recent deliveries (payload, status code,
+error, attempt count) are listed on the endpoint's page and kept for 14 days.
+
+Webhook delivery runs on its own ticker and never blocks or delays email
+sending; a broken endpoint only affects itself.
+
 ## Backups
 
 The database is a single SQLite file at `$DOEVOE_DATA_DIR/doevoe.db`,
@@ -212,6 +308,14 @@ listed here so they're a documented decision rather than a surprise:
 - **No CSRF tokens** — admin form-post routes rely solely on the session
   cookie's `SameSite=Lax` attribute for CSRF protection, not an explicit
   per-form token.
+- **Webhook URLs aren't restricted to public addresses** — an admin can point
+  an endpoint at a private or loopback address on purpose (a receiver on the
+  same network is the common self-hosted case), so doevoe only enforces that
+  the URL is an absolute `http(s)` one. Anyone with the admin password can
+  therefore make doevoe issue POSTs from inside your network.
+- **Webhook signing secrets are stored in the clear** — unlike API keys
+  (hashed), the secret is the HMAC key every attempt has to re-derive a
+  signature from, so it lives in the database and is shown in the admin UI.
 - **The container runs as root** — the distroless image doesn't drop
   privileges to a non-root user; it relies on the container boundary and the
   lack of a shell/package manager in the image, not a `USER` directive, for

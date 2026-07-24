@@ -14,11 +14,16 @@ import (
 type SendFunc func(ctx context.Context, e *store.Email, d *store.Domain) Result
 
 type Worker struct {
-	Store              *store.Store
-	Send               SendFunc
-	Interval           time.Duration
-	BatchSize          int
-	PerDomainLimit     int
+	Store          *store.Store
+	Send           SendFunc
+	Interval       time.Duration
+	BatchSize      int
+	PerDomainLimit int
+	// OnSent and OnPermanentFailure are notified after the email's status has
+	// been written, so a hook that reads the email back sees the new status.
+	// Both are optional and must not block: they run inline on the delivery
+	// goroutine (webhook fan-out only queues rows; it doesn't do the POST).
+	OnSent             func(emailID int64)
 	OnPermanentFailure func(emailID int64)
 }
 
@@ -132,6 +137,9 @@ func (w *Worker) process(ctx context.Context, e *store.Email, now time.Time) {
 	if res.Err == nil {
 		if err := w.Store.MarkSent(e.ID, store.Now()); err != nil {
 			slog.Error("mark sent", "email", e.ID, "err", err)
+		}
+		if w.OnSent != nil {
+			w.OnSent(e.ID)
 		}
 		return
 	}

@@ -2,12 +2,15 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
 	"doevoe/internal/dnscheck"
+	"doevoe/internal/store"
 )
 
 func TestCreateDomainShowsWizard(t *testing.T) {
@@ -86,6 +89,63 @@ func TestVerifyDomainIndeterminateDoesNotPersist(t *testing.T) {
 	d, _ = s.GetDomain(d.ID)
 	if !d.SPFVerified || !d.DKIMVerified || !d.DMARCVerified {
 		t.Fatalf("indeterminate check must not change verification flags: %+v", d)
+	}
+}
+
+// The webhook events domain.verified / domain.unverified fire on a state
+// change only: an admin clicking Verify twice on an already-verified domain
+// must not produce a second event, and an indeterminate check must produce
+// none at all (it doesn't persist anything either).
+func TestVerifyDomainReportsTransitionsOnly(t *testing.T) {
+	s, _, _ := adminFixture(t)
+	d, err := s.CreateDomain("client.example", "mail1", "PEM")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var changes []bool
+	a := New(s, "hunter2", "203.0.113.7", "ops@example.com", "mail.example.com")
+	a.CheckDomain = func(context.Context, *store.Domain) dnscheck.Result { return fakeCheckResult }
+	a.OnVerificationChanged = func(domainID int64, verified bool) {
+		if domainID != d.ID {
+			t.Errorf("hook got domain %d, want %d", domainID, d.ID)
+		}
+		changes = append(changes, verified)
+	}
+	mux := http.NewServeMux()
+	a.Routes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := authedClient(t, a, srv)
+	verify := func() {
+		t.Helper()
+		resp, err := c.PostForm(fmt.Sprintf("%s/admin/domains/%d/verify", srv.URL, d.ID), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("verify: %d", resp.StatusCode)
+		}
+	}
+
+	allOK := dnscheck.Result{
+		SPF:   dnscheck.RecordResult{OK: true},
+		DKIM:  dnscheck.RecordResult{OK: true},
+		DMARC: dnscheck.RecordResult{OK: true},
+	}
+	setFakeCheck(t, allOK)
+	verify()
+	verify() // still verified: no second event
+	setFakeCheck(t, dnscheck.Result{Indeterminate: true})
+	verify() // resolver blip: nothing persisted, nothing reported
+	setFakeCheck(t, dnscheck.Result{
+		SPF:  dnscheck.RecordResult{OK: true},
+		DKIM: dnscheck.RecordResult{OK: true},
+	})
+	verify() // lost DMARC: unverified transition
+
+	if len(changes) != 2 || !changes[0] || changes[1] {
+		t.Fatalf("verification changes = %v, want [true false]", changes)
 	}
 }
 

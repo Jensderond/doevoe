@@ -1,0 +1,73 @@
+{{define "content"}}
+<p class="back"><a href="/admin/webhooks">&larr; Webhooks</a></p>
+<div class="page-head">
+  <h1>{{.Webhook.Name}}</h1>
+  {{if .Webhook.Active}}<span class="chip sent">active</span>{{else}}<span class="chip queued">paused</span>{{end}}
+</div>
+
+<section class="card">
+  <dl class="fields">
+    <div><dt>URL</dt><dd>{{.Webhook.URL}}</dd></div>
+    <div><dt>Created</dt><dd>{{.Webhook.CreatedAt}}</dd></div>
+    {{with .Webhook.LastDeliveryAt}}<div><dt>Last try</dt><dd>{{.}}</dd></div>{{end}}
+    {{if .Webhook.LastStatus}}<div><dt>Last code</dt><dd>HTTP {{.Webhook.LastStatus}}</dd></div>{{end}}
+    {{with .Webhook.LastError}}<div class="is-error"><dt>Last error</dt><dd>{{.}}</dd></div>{{end}}
+  </dl>
+  <p class="lede spaced">Signing secret &mdash; verify <code>X-Doevoe-Signature</code> against
+     <code>HMAC-SHA256(secret, "&lt;X-Doevoe-Timestamp&gt;." + rawBody)</code>:</p>
+  <div class="dns-record">{{.Webhook.Secret}}</div>
+</section>
+
+<div class="actions">
+  <form method="post" action="/admin/webhooks/{{.Webhook.ID}}/test" hx-boost="false">
+    <button type="submit">Send test event</button>
+  </form>
+  <form method="post" action="/admin/webhooks/{{.Webhook.ID}}/delete" hx-boost="false"
+        onsubmit="return confirm('Delete this webhook, its secret and its delivery history?')">
+    <button type="submit">Delete</button>
+  </form>
+</div>
+
+<h2 class="section-title">Settings</h2>
+<form method="post" action="/admin/webhooks/{{.Webhook.ID}}" class="card" hx-boost="false">
+  <label>Name <input name="name" value="{{.Webhook.Name}}" required></label>
+  <label>Endpoint URL <input name="url" type="url" value="{{.Webhook.URL}}" required></label>
+  <fieldset class="checkboxes">
+    <legend>Events</legend>
+    {{range .Events}}
+    <label class="checkbox">
+      <input type="checkbox" name="events" value="{{.Name}}"{{if .Checked}} checked{{end}}>
+      <span><code>{{.Name}}</code> <small>{{.Help}}</small></span>
+    </label>
+    {{end}}
+  </fieldset>
+  <label class="checkbox standalone">
+    <input type="checkbox" name="active" value="1"{{if .Webhook.Active}} checked{{end}}>
+    <span>Active <small>Paused endpoints receive nothing, not even queued events.</small></span>
+  </label>
+  <div class="actions"><button type="submit" class="primary">Save changes</button></div>
+</form>
+
+<h2 class="section-title">Recent deliveries</h2>
+<div class="list">
+{{range .Deliveries}}
+<div class="attempt">
+  <div class="row-top">
+    <code>{{.Event}}</code>
+    <span class="chip {{.Status}}">{{.Status}}</span>
+  </div>
+  <div class="row-meta">
+    <span>#{{.ID}}</span>
+    <span>{{.CreatedAt}}</span>
+    <span>{{.Attempts}} attempt{{if ne .Attempts 1}}s{{end}}</span>
+    {{if .ResponseCode}}<span>HTTP {{.ResponseCode}}</span>{{end}}
+    {{if eq .Status "queued"}}<span>Next {{.NextAttemptAt}}</span>{{end}}
+  </div>
+  {{with .LastError}}<div class="attempt-resp bad">{{.}}</div>{{end}}
+  <details class="payload"><summary>Payload</summary><pre class="mono-block">{{.Payload}}</pre></details>
+</div>
+{{else}}
+<p class="empty">No deliveries yet.</p>
+{{end}}
+</div>
+{{end}}

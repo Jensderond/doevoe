@@ -33,6 +33,14 @@ type Admin struct {
 	Password, EgressIP, AdminEmail, Hostname string
 	OnKeyCreated, OnKeyRevoked               func(name, domainName string)
 	CheckDomain                              func(ctx context.Context, d *store.Domain) dnscheck.Result
+	// OnWebhookTest queues a test delivery for one endpoint (wired to the
+	// webhook dispatcher); nil means the test button reports 500.
+	OnWebhookTest func(webhookID int64) error
+	// OnVerificationChanged fires only when a manual verify flips a domain's
+	// overall verified state, so subscribers hear about the transition rather
+	// than every re-check. The hourly re-check loop in cmd/doevoe reports the
+	// same way.
+	OnVerificationChanged func(domainID int64, verified bool)
 
 	// loginFailDelay is slept before responding to a failed login attempt,
 	// to throttle password-guessing. Defaults to 1s (see New); tests set it
@@ -68,6 +76,12 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /admin/keys", a.auth(a.listKeys))
 	mux.Handle("POST /admin/keys", a.auth(a.createKey))
 	mux.Handle("POST /admin/keys/{id}/revoke", a.auth(a.revokeKey))
+	mux.Handle("GET /admin/webhooks", a.auth(a.listWebhooks))
+	mux.Handle("POST /admin/webhooks", a.auth(a.createWebhook))
+	mux.Handle("GET /admin/webhooks/{id}", a.auth(a.showWebhook))
+	mux.Handle("POST /admin/webhooks/{id}", a.auth(a.updateWebhook))
+	mux.Handle("POST /admin/webhooks/{id}/test", a.auth(a.testWebhook))
+	mux.Handle("POST /admin/webhooks/{id}/delete", a.auth(a.deleteWebhook))
 }
 
 func (a *Admin) login(w http.ResponseWriter, r *http.Request) {
@@ -133,7 +147,8 @@ var navSection = map[string]string{
 	"dashboard": "dashboard",
 	"emails":    "emails", "email": "emails",
 	"domains": "domains", "domain": "domains",
-	"keys": "keys",
+	"keys":     "keys",
+	"webhooks": "webhooks", "webhook": "webhooks",
 }
 
 func (a *Admin) renderStatus(w http.ResponseWriter, r *http.Request, status int, page string, data any) {
@@ -447,6 +462,10 @@ func (a *Admin) verifyDomain(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("dns verification indeterminate; not persisting", "domain", d.Name)
 	} else {
 		a.Store.SetDomainVerification(d.ID, res.SPF.OK, res.DKIM.OK, res.DMARC.OK, store.Now())
+		nowVerified := res.SPF.OK && res.DKIM.OK && res.DMARC.OK
+		if a.OnVerificationChanged != nil && nowVerified != d.Verified() {
+			a.OnVerificationChanged(d.ID, nowVerified)
+		}
 	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/domains/%d", d.ID), http.StatusSeeOther)
 }

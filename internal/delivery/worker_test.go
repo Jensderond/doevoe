@@ -77,6 +77,36 @@ func TestTickOutcomes(t *testing.T) {
 	}
 }
 
+// OnSent must fire once per delivered email, and only after MarkSent, so a
+// hook that reads the email back (the webhook dispatcher does) sees 'sent'.
+func TestOnSentFiresAfterStatusIsWritten(t *testing.T) {
+	s, _, w, ids := workerFixture(t)
+	var mu sync.Mutex
+	var sent []int64
+	statuses := map[int64]string{}
+	w.OnSent = func(id int64) {
+		e, err := s.GetEmail(id)
+		if err != nil {
+			t.Errorf("hook could not load email %d: %v", id, err)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		sent = append(sent, id)
+		statuses[id] = e.Status
+	}
+
+	if err := w.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 || sent[0] != ids[0] {
+		t.Fatalf("OnSent calls = %v, want just the delivered email %d", sent, ids[0])
+	}
+	if statuses[ids[0]] != "sent" {
+		t.Errorf("status seen by the hook = %q, want sent", statuses[ids[0]])
+	}
+}
+
 func TestPerDomainLimitCapsConcurrency(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "db"))
 	if err != nil {

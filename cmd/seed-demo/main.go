@@ -10,6 +10,7 @@ import (
 
 	"doevoe/internal/dkimkeys"
 	"doevoe/internal/store"
+	"doevoe/internal/webhook"
 )
 
 func main() {
@@ -35,6 +36,29 @@ func main() {
 	s.TouchAPIKey(kid, "2026-07-20T18:12:00Z")
 	_, hash2, _ := store.GenerateAPIKey()
 	s.CreateAPIKey("webshop orders", shop.ID, hash2)
+
+	// Two endpoints so the webhooks page shows both a healthy and a broken one.
+	secret1, _ := store.GenerateWebhookSecret()
+	if hook, err := s.CreateWebhook("app delivery log", "https://app.client.example/hooks/doevoe", secret1,
+		[]string{webhook.EventEmailSent, webhook.EventEmailFailed}); err == nil {
+		s.TouchWebhook(hook.ID, 200, "", "2026-07-21T08:14:00Z")
+		id, _ := s.EnqueueWebhookDelivery(&store.WebhookDelivery{
+			WebhookID: hook.ID, EmailID: 1, Event: webhook.EventEmailSent,
+			Payload:   `{"event":"email.sent","created_at":"2026-07-21T08:14:00Z","data":{"email":{"id":1,"status":"sent","domain":"client.example"}}}`,
+			CreatedAt: "2026-07-21T08:14:00Z",
+		})
+		s.MarkWebhookDelivered(id, 200, "2026-07-21T08:14:01Z")
+	}
+	secret2, _ := store.GenerateWebhookSecret()
+	if hook, err := s.CreateWebhook("ops slack bridge", "https://hooks.internal.example/doevoe", secret2,
+		[]string{webhook.EventDomainUnverified}); err == nil {
+		s.TouchWebhook(hook.ID, 502, "HTTP 502: bad gateway", "2026-07-21T08:20:00Z")
+		s.EnqueueWebhookDelivery(&store.WebhookDelivery{
+			WebhookID: hook.ID, Event: webhook.EventDomainUnverified,
+			Payload:   `{"event":"domain.unverified","created_at":"2026-07-21T08:20:00Z","data":{"domain":{"name":"shop.example","verified":false}}}`,
+			CreatedAt: "2026-07-21T08:20:00Z",
+		})
+	}
 
 	subjects := []string{
 		"Welcome to client.example", "Your invoice #10", "Password reset",

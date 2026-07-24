@@ -59,6 +59,22 @@ func newTestJar(t *testing.T) http.CookieJar {
 	return jar
 }
 
+// authedClient returns a client with a session already injected into a, for
+// tests that need their own Admin (different injected hooks) rather than the
+// one adminFixture builds.
+func authedClient(t *testing.T, a *Admin, srv *httptest.Server) *http.Client {
+	t.Helper()
+	jar := newTestJar(t)
+	u, _ := url.Parse(srv.URL)
+	jar.SetCookies(u, []*http.Cookie{{Name: "doevoe_session", Value: "test-session-token", Path: "/admin"}})
+	a.mu.Lock()
+	a.sessions["test-session-token"] = time.Now().Add(7 * 24 * time.Hour)
+	a.mu.Unlock()
+	return &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+}
+
 func login(t *testing.T, srv *httptest.Server, c *http.Client, password string) *http.Response {
 	t.Helper()
 	resp, err := c.PostForm(srv.URL+"/admin/login", url.Values{"password": {password}})

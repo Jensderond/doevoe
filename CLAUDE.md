@@ -38,7 +38,10 @@ struct fields, not interfaces/DI framework):
   `SQLITE_BUSY` entirely rather than adding retry logic. Timestamps are stored as RFC3339
   strings (`store.Now()` / `store.FmtTime()` / `store.ParseTime()`), not SQLite's native time
   type. `notify_pending_failures` / `notify_state` are how `internal/notify` persists
-  cross-tick state without its own storage.
+  cross-tick state without its own storage; `webhooks` / `webhook_deliveries` are the same
+  arrangement for `internal/webhook`. New tables go in the `schema` constant (its
+  CREATE TABLE IF NOT EXISTS covers existing DBs too); only new *columns* need a `migrate`
+  ALTER.
 - **`internal/api`** — the public JSON API (`POST /api/v1/emails`, `GET /api/v1/emails/{id}`),
   bearer-token auth against `store.APIKey`. Validates everything it can up front (addresses,
   header values, from-domain match, domain verification) so a bad request never becomes a
@@ -48,7 +51,9 @@ struct fields, not interfaces/DI framework):
 - **`internal/admin`** — server-rendered HTML admin UI (`html/template`, embedded
   `templates/*.html` + `static/*`), single-admin-password auth with a random session token
   cookie (`SameSite=Lax`, no CSRF token — see v1 scope notes in README). Owns domain
-  create/verify, API key create/revoke, and the email list/detail/retry views.
+  create/verify, API key create/revoke, the email list/detail/retry views, and the webhook
+  CRUD/test views (`webhooks.go`). Cross-package side effects are injected function fields
+  (`OnKeyCreated`, `OnWebhookTest`, `OnVerificationChanged`, …), all wired in `main.go`.
 - **`internal/delivery`** — the sending pipeline:
   - `worker.go`: polls `store.ClaimDue` on a ticker, delivers concurrently with a
     per-recipient-domain concurrency limit (semaphore per domain), recovers panics per-email
@@ -64,6 +69,17 @@ struct fields, not interfaces/DI framework):
   - `classify.go`: SMTP 5xx (and "recipient domain doesn't exist" DNS errors) are permanent;
     everything else is temporary and retried.
   - `message.go`: builds and DKIM-signs the RFC 5322 message.
+- **`internal/webhook`** — signed outbound event delivery to admin-configured endpoints.
+  `Dispatcher.EmailEvent`/`DomainEvent` snapshot a JSON payload and queue one
+  `webhook_deliveries` row per subscribed endpoint (fail-open: every error is logged and
+  swallowed, so a webhook problem can never affect the email operation that produced the
+  event); `Dispatcher.Run` then POSTs them on its own ticker with its own, much shorter
+  backoff (`webhook.Schedule`: 30s → 2m → 10m → 30m → 2h) — read the comment there before
+  reaching for `delivery.Schedule` instead. Same claim/stale-requeue pattern as the email
+  worker, so `defaultTimeout` and `staleSendingWindow` in `dispatcher.go` are load-bearing
+  together. `webhook.Events` is the single source of truth for event names (the admin form
+  and its validation both read it); `EventTest` is deliberately not in it. Signature format
+  lives in `Sign` and is documented in the README.
 - **`internal/dkimkeys`** — DKIM keypair generation and DNS record text generation
   (`dkimkeys.Records`) shown in the admin UI.
 - **`internal/dnscheck`** — looks up SPF/DKIM/DMARC TXT records and compares against expected

@@ -1,0 +1,41 @@
+{{define "content"}}
+<h1>Webhooks</h1>
+<p class="lede">doevoe POSTs a signed JSON payload to every endpoint subscribed to an event.
+   Delivery is retried on its own backoff schedule and never holds up sending.</p>
+
+<form method="post" action="/admin/webhooks" class="card" hx-boost="false">
+  <label>Name <input name="name" placeholder="site-a delivery log" required></label>
+  <label>Endpoint URL <input name="url" type="url" placeholder="https://app.example.com/hooks/doevoe" required></label>
+  <fieldset class="checkboxes">
+    <legend>Events</legend>
+    {{range .Events}}
+    <label class="checkbox">
+      <input type="checkbox" name="events" value="{{.Name}}"{{if .Checked}} checked{{end}}>
+      <span><code>{{.Name}}</code> <small>{{.Help}}</small></span>
+    </label>
+    {{end}}
+  </fieldset>
+  <div class="actions"><button type="submit" class="primary">Add webhook</button></div>
+</form>
+
+<div class="list">
+{{range .Webhooks}}
+<a class="row" href="/admin/webhooks/{{.ID}}">
+  <div class="row-top">
+    <span class="domain-name">{{.Name}}</span>
+    {{if .Active}}<span class="chip sent">active</span>{{else}}<span class="chip queued">paused</span>{{end}}
+    {{if .LastError}}<span class="chip failed">last attempt failed</span>{{end}}
+  </div>
+  <div class="addr">{{.URL}}</div>
+  <div class="row-meta">
+    <span>{{len .Events}} event{{if ne (len .Events) 1}}s{{end}}</span>
+    {{with .LastDeliveryAt}}<span>Last try {{.}}</span>{{end}}
+    {{if .LastStatus}}<span>HTTP {{.LastStatus}}</span>{{end}}
+  </div>
+  {{with .LastError}}<div class="row-err">{{.}}</div>{{end}}
+</a>
+{{else}}
+<p class="empty">No webhooks yet.</p>
+{{end}}
+</div>
+{{end}}

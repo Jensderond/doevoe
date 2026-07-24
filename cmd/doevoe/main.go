@@ -24,6 +24,7 @@ import (
 	"doevoe/internal/dnscheck"
 	"doevoe/internal/notify"
 	"doevoe/internal/store"
+	"doevoe/internal/webhook"
 )
 
 func main() {
@@ -47,7 +48,24 @@ func main() {
 		BaseURL: baseURL, Threshold: cfg.FailureRateThreshold, MinVolume: cfg.FailureRateMinVolume,
 	}
 	sender := delivery.NewSender(cfg.Hostname, cfg.SMTPPort)
-	worker := &delivery.Worker{Store: s, Send: sender.Send, OnPermanentFailure: notifier.PermanentFailure}
+	dispatcher := &webhook.Dispatcher{Store: s}
+	worker := &delivery.Worker{Store: s, Send: sender.Send,
+		OnSent: func(id int64) { dispatcher.EmailEvent(webhook.EventEmailSent, id) },
+		OnPermanentFailure: func(id int64) {
+			notifier.PermanentFailure(id)
+			dispatcher.EmailEvent(webhook.EventEmailFailed, id)
+		},
+	}
+
+	// onVerificationChanged is shared by the manual verify handler and the
+	// hourly re-check loop, so both report a transition the same way.
+	onVerificationChanged := func(domainID int64, verified bool) {
+		event := webhook.EventDomainUnverified
+		if verified {
+			event = webhook.EventDomainVerified
+		}
+		dispatcher.DomainEvent(event, domainID)
+	}
 
 	checkDomain := func(ctx context.Context, d *store.Domain) dnscheck.Result {
 		pub, err := dkimkeys.PublicB64FromPrivatePEM(d.DKIMPrivateKey)
@@ -65,6 +83,8 @@ func main() {
 	adm.CheckDomain = checkDomain
 	adm.OnKeyCreated = notifier.KeyCreated
 	adm.OnKeyRevoked = notifier.KeyRevoked
+	adm.OnWebhookTest = dispatcher.Test
+	adm.OnVerificationChanged = onVerificationChanged
 
 	mux := http.NewServeMux()
 	(&api.Server{Store: s}).Routes(mux)
@@ -90,7 +110,12 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		recheckDNSLoop(ctx, s, checkDomain) // hourly re-verification per spec
+		dispatcher.Run(ctx)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		recheckDNSLoop(ctx, s, checkDomain, onVerificationChanged) // hourly re-verification per spec
 	}()
 
 	srv := &http.Server{
@@ -127,7 +152,8 @@ func main() {
 // recheckDNSLoop periodically re-verifies each domain's SPF/DKIM/DMARC
 // records so that a domain that later loses (or gains) correct DNS records
 // reflects that in the admin UI without requiring a manual "verify" click.
-func recheckDNSLoop(ctx context.Context, s *store.Store, check func(context.Context, *store.Domain) dnscheck.Result) {
+func recheckDNSLoop(ctx context.Context, s *store.Store, check func(context.Context, *store.Domain) dnscheck.Result,
+	onVerificationChanged func(domainID int64, verified bool)) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
 	for {
@@ -150,6 +176,12 @@ func recheckDNSLoop(ctx context.Context, s *store.Store, check func(context.Cont
 					continue
 				}
 				s.SetDomainVerification(d.ID, res.SPF.OK, res.DKIM.OK, res.DMARC.OK, store.Now())
+				// Only a transition is worth telling webhook subscribers
+				// about; an hourly "still verified" would be noise.
+				nowVerified := res.SPF.OK && res.DKIM.OK && res.DMARC.OK
+				if onVerificationChanged != nil && nowVerified != d.Verified() {
+					onVerificationChanged(d.ID, nowVerified)
+				}
 			}
 		}
 	}
