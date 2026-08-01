@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -66,6 +67,12 @@ func main() {
 	adm.CheckDomain = checkDomain
 	adm.OnKeyCreated = notifier.KeyCreated
 	adm.OnKeyRevoked = notifier.KeyRevoked
+	// SystemDomain/DMARCRua wiring: derived from cfg.SystemFrom the same way
+	// notify.Notifier does (domain part of the "user@domain" address). The
+	// built-in DMARC receiver itself isn't started until Task 9; this just
+	// keeps the admin UI's rendered records consistent in the meantime.
+	adm.SystemDomain = cfg.SystemFrom[strings.LastIndex(cfg.SystemFrom, "@")+1:]
+	adm.DMARCRua = "dmarc@" + adm.SystemDomain
 
 	mux := http.NewServeMux()
 	(&api.Server{Store: s}).Routes(mux)

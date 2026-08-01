@@ -36,6 +36,8 @@ func adminFixture(t *testing.T) (*store.Store, *httptest.Server, *http.Client) {
 	}
 	t.Cleanup(func() { s.Close() })
 	a := New(s, "hunter2", "203.0.113.7", "ops@example.com", "mail.example.com")
+	a.DMARCRua = "dmarc@sys.example"
+	a.SystemDomain = "sys.example"
 	a.loginFailDelay = 0 // keep bad-password tests fast
 	a.CheckDomain = func(ctx context.Context, d *store.Domain) dnscheck.Result {
 		return fakeCheckResult
@@ -173,6 +175,53 @@ func TestVerifyDomainNilCheckDomain(t *testing.T) {
 	if updated.SPFVerified || updated.DKIMVerified || updated.DMARCVerified {
 		t.Fatalf("expected all verification flags to be false, got SPF=%v DKIM=%v DMARC=%v",
 			updated.SPFVerified, updated.DKIMVerified, updated.DMARCVerified)
+	}
+}
+
+func TestShowDomainSystemRecords(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+
+	// Go through the createDomain handler (rather than s.CreateDomain
+	// directly) so the domain gets a real DKIM keypair; showDomain needs to
+	// parse it to build the records list.
+	if resp, _ := c.PostForm(srv.URL+"/admin/domains", url.Values{"name": {"sys.example"}}); resp.StatusCode != 303 {
+		t.Fatalf("create sys.example: %d", resp.StatusCode)
+	}
+	if resp, _ := c.PostForm(srv.URL+"/admin/domains", url.Values{"name": {"example.com"}}); resp.StatusCode != 303 {
+		t.Fatalf("create example.com: %d", resp.StatusCode)
+	}
+	sysDomain, err := s.GetDomainByName("sys.example")
+	if err != nil || sysDomain == nil {
+		t.Fatalf("sys.example: %v %+v", err, sysDomain)
+	}
+	other, err := s.GetDomainByName("example.com")
+	if err != nil || other == nil {
+		t.Fatalf("example.com: %v %+v", err, other)
+	}
+
+	resp, err := c.Get(fmt.Sprintf("%s/admin/domains/%d", srv.URL, sysDomain.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "_report._dmarc") {
+		t.Errorf("system domain page missing _report._dmarc record: %q", body)
+	}
+	if !strings.Contains(body, "MX") {
+		t.Errorf("system domain page missing MX record: %q", body)
+	}
+
+	resp, err = c.Get(fmt.Sprintf("%s/admin/domains/%d", srv.URL, other.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = readBody(t, resp)
+	if strings.Contains(body, "_report._dmarc") {
+		t.Errorf("non-system domain page unexpectedly has _report._dmarc record: %q", body)
+	}
+	if !strings.Contains(body, "rua=mailto:dmarc@sys.example") {
+		t.Errorf("non-system domain page missing rua=mailto:dmarc@sys.example: %q", body)
 	}
 }
 

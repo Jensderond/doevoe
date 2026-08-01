@@ -33,8 +33,16 @@ var assets embed.FS
 type Admin struct {
 	Store                                    *store.Store
 	Password, EgressIP, AdminEmail, Hostname string
-	OnKeyCreated, OnKeyRevoked               func(name, domainName string)
-	CheckDomain                              func(ctx context.Context, d *store.Domain) dnscheck.Result
+	// DMARCRua is the mailbox that DMARC aggregate reports get sent to
+	// (the built-in receiver's report address, e.g. "dmarc@<SystemDomain>"),
+	// used as the rua= value in a sending domain's DMARC record.
+	DMARCRua string
+	// SystemDomain is the domain doevoe's built-in DMARC report receiver
+	// lives under; when a domain's page matches it, showDomain also
+	// renders SystemRecords (the one-time MX/TXT setup for the receiver).
+	SystemDomain               string
+	OnKeyCreated, OnKeyRevoked func(name, domainName string)
+	CheckDomain                func(ctx context.Context, d *store.Domain) dnscheck.Result
 
 	// loginFailDelay is slept before responding to a failed login attempt,
 	// to throttle password-guessing. Defaults to 1s (see New); tests set it
@@ -349,7 +357,7 @@ func (a *Admin) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	// Half-open window covering the last `days` full UTC calendar days.
 	now := time.Now().UTC()
-	startDay := now.Truncate(24 * time.Hour).AddDate(0, 0, -(days - 1))
+	startDay := now.Truncate(24*time.Hour).AddDate(0, 0, -(days - 1))
 	from := store.FmtTime(startDay)
 	to := store.FmtTime(startDay.AddDate(0, 0, days))
 
@@ -666,7 +674,10 @@ func (a *Admin) showDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	records := dkimkeys.Records(d.Name, d.DKIMSelector, pubB64, a.EgressIP, a.AdminEmail)
+	records := dkimkeys.Records(d.Name, d.DKIMSelector, pubB64, a.EgressIP, a.DMARCRua)
+	if d.Name == a.SystemDomain {
+		records = append(records, dkimkeys.SystemRecords(a.SystemDomain, a.Hostname)...)
+	}
 	a.render(w, r, "domain", map[string]any{"Domain": d, "Records": records})
 }
 
