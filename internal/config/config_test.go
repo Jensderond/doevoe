@@ -22,6 +22,31 @@ func TestLoadDefaults(t *testing.T) {
 	if c.FailureRateThreshold != 0.2 || c.FailureRateMinVolume != 10 {
 		t.Errorf("bad alert defaults: %+v", c)
 	}
+	if c.InboundListen != ":25" {
+		t.Errorf("want default InboundListen :25, got %q", c.InboundListen)
+	}
+}
+
+func TestLoadInboundListen(t *testing.T) {
+	setRequired(t)
+
+	t.Setenv("DOEVOE_INBOUND_LISTEN", ":2525")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.InboundListen != ":2525" {
+		t.Errorf("want :2525, got %q", c.InboundListen)
+	}
+
+	t.Setenv("DOEVOE_INBOUND_LISTEN", "")
+	c, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.InboundListen != "" {
+		t.Errorf("want empty InboundListen (disabled) when explicitly set to empty, got %q", c.InboundListen)
+	}
 }
 
 func TestLoadMissingRequired(t *testing.T) {

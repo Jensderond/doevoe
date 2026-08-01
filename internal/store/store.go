@@ -93,6 +93,29 @@ CREATE TABLE IF NOT EXISTS blocklist_events (
   listed INTEGER NOT NULL,
   occurred_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dmarc_reports (
+  id INTEGER PRIMARY KEY,
+  org TEXT NOT NULL,
+  report_id TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  range_begin TEXT NOT NULL,
+  range_end TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  raw TEXT NOT NULL DEFAULT '',
+  UNIQUE(org, report_id)
+);
+CREATE TABLE IF NOT EXISTS dmarc_records (
+  id INTEGER PRIMARY KEY,
+  report_id INTEGER NOT NULL REFERENCES dmarc_reports(id) ON DELETE CASCADE,
+  source_ip TEXT NOT NULL,
+  count INTEGER NOT NULL,
+  disposition TEXT NOT NULL DEFAULT '',
+  dkim TEXT NOT NULL DEFAULT '',
+  spf TEXT NOT NULL DEFAULT '',
+  header_from TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_dmarc_reports_received ON dmarc_reports(received_at);
+CREATE INDEX IF NOT EXISTS idx_dmarc_records_report ON dmarc_records(report_id);
 `
 
 func Open(path string) (*Store, error) {

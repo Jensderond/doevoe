@@ -33,8 +33,16 @@ var assets embed.FS
 type Admin struct {
 	Store                                    *store.Store
 	Password, EgressIP, AdminEmail, Hostname string
-	OnKeyCreated, OnKeyRevoked               func(name, domainName string)
-	CheckDomain                              func(ctx context.Context, d *store.Domain) dnscheck.Result
+	// DMARCRua is the mailbox that DMARC aggregate reports get sent to
+	// (the built-in receiver's report address, e.g. "dmarc@<SystemDomain>"),
+	// used as the rua= value in a sending domain's DMARC record.
+	DMARCRua string
+	// SystemDomain is the domain doevoe's built-in DMARC report receiver
+	// lives under; when a domain's page matches it, showDomain also
+	// renders SystemRecords (the one-time MX/TXT setup for the receiver).
+	SystemDomain               string
+	OnKeyCreated, OnKeyRevoked func(name, domainName string)
+	CheckDomain                func(ctx context.Context, d *store.Domain) dnscheck.Result
 
 	// loginFailDelay is slept before responding to a failed login attempt,
 	// to throttle password-guessing. Defaults to 1s (see New); tests set it
@@ -64,6 +72,7 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /admin/emails/{id}", a.auth(a.showEmail))
 	mux.Handle("POST /admin/emails/{id}/retry", a.auth(a.retryEmail))
 	mux.Handle("POST /admin/emails/{id}/cancel", a.auth(a.cancelEmail))
+	mux.Handle("GET /admin/dmarc", a.auth(a.dmarcPage))
 	mux.Handle("GET /admin/domains", a.auth(a.listDomains))
 	mux.Handle("POST /admin/domains", a.auth(a.createDomain))
 	mux.Handle("GET /admin/domains/{id}", a.auth(a.showDomain))
@@ -136,7 +145,8 @@ var navSection = map[string]string{
 	"dashboard": "dashboard",
 	"emails":    "emails", "email": "emails",
 	"domains": "domains", "domain": "domains",
-	"keys": "keys",
+	"keys":  "keys",
+	"dmarc": "dmarc",
 }
 
 func (a *Admin) renderStatus(w http.ResponseWriter, r *http.Request, status int, page string, data any) {
@@ -347,7 +357,7 @@ func (a *Admin) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	// Half-open window covering the last `days` full UTC calendar days.
 	now := time.Now().UTC()
-	startDay := now.Truncate(24 * time.Hour).AddDate(0, 0, -(days - 1))
+	startDay := now.Truncate(24*time.Hour).AddDate(0, 0, -(days - 1))
 	from := store.FmtTime(startDay)
 	to := store.FmtTime(startDay.AddDate(0, 0, days))
 
@@ -504,6 +514,35 @@ func (a *Admin) listEmails(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// dmarcPage shows per-domain DMARC pass/fail rollups, the top failing
+// sources, and the raw report list for a period. It reuses the same
+// resolveEmailWindow + period-chip machinery as listEmails: this page has no
+// other filters, so each chip link is just the range key against
+// /admin/dmarc.
+func (a *Admin) dmarcPage(w http.ResponseWriter, r *http.Request) {
+	win := resolveEmailWindow(r.URL.Query(), time.Now().UTC())
+	summary, err := a.Store.DMARCSummary(win.CreatedFrom, win.CreatedTo)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	sources, _ := a.Store.DMARCTopFailingSources(win.CreatedFrom, win.CreatedTo, 10)
+	reports, _ := a.Store.ListDMARCReports(win.CreatedFrom, win.CreatedTo, 100)
+
+	// Same chip semantics as the email list (admin.go ~476): each chip is a
+	// plain link carrying only its range key, so clicking one clears any
+	// custom dates. This page has no other filters, so the URL is just the key.
+	chips := make([]rangeChip, 0, len(emailRanges))
+	for _, rg := range emailRanges {
+		chips = append(chips, rangeChip{Key: rg.Key, Label: rg.Label, Title: rg.Title,
+			URL: "/admin/dmarc?range=" + rg.Key, Active: win.Range == rg.Key})
+	}
+	a.render(w, r, "dmarc", map[string]any{
+		"Ranges": chips, "RangeKey": win.Range, "WindowLabel": win.Label,
+		"Summary": summary, "Sources": sources, "Reports": reports,
+	})
+}
+
 // retryable and cancelable mirror the store's status guards so the email page
 // only offers the actions the store would accept. The store's conditional
 // UPDATE remains the authority — it's what closes the read-then-write race
@@ -635,7 +674,10 @@ func (a *Admin) showDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	records := dkimkeys.Records(d.Name, d.DKIMSelector, pubB64, a.EgressIP, a.AdminEmail)
+	records := dkimkeys.Records(d.Name, d.DKIMSelector, pubB64, a.EgressIP, a.DMARCRua)
+	if d.Name == a.SystemDomain {
+		records = append(records, dkimkeys.SystemRecords(a.SystemDomain, a.Hostname)...)
+	}
 	a.render(w, r, "domain", map[string]any{"Domain": d, "Records": records})
 }
 

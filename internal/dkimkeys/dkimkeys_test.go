@@ -66,7 +66,7 @@ func TestPublicB64FromPrivatePEM(t *testing.T) {
 }
 
 func TestRecords(t *testing.T) {
-	recs := Records("example.com", "mail1", "PUBKEY", "203.0.113.7", "ops@example.com")
+	recs := Records("example.com", "mail1", "PUBKEY", "203.0.113.7", "dmarc@sys.example")
 	if len(recs) != 4 {
 		t.Fatalf("want 4 records, got %d", len(recs))
 	}
@@ -77,7 +77,27 @@ func TestRecords(t *testing.T) {
 	if dkim.Host != "mail1._domainkey" || dkim.Value != "v=DKIM1; k=rsa; p=PUBKEY" {
 		t.Errorf("dkim: %+v", dkim)
 	}
-	if dmarc.Host != "_dmarc" || dmarc.Value != "v=DMARC1; p=quarantine; rua=mailto:ops@example.com" {
+	if dmarc.Host != "_dmarc" || dmarc.Value != "v=DMARC1; p=quarantine; rua=mailto:dmarc@sys.example" {
 		t.Errorf("dmarc: %+v", dmarc)
+	}
+}
+
+func TestSystemRecords(t *testing.T) {
+	recs := SystemRecords("sys.example", "mail.example.com")
+	if len(recs) != 2 {
+		t.Fatalf("want 2 records, got %d", len(recs))
+	}
+	mx, txt := recs[0], recs[1]
+	if mx.Type != "MX" || mx.Host != "@" || mx.Value != "10 mail.example.com" {
+		t.Errorf("mx: %+v", mx)
+	}
+	if mx.Note != "Lets DMARC reporters deliver aggregate reports to doevoe's built-in receiver (port 25)." {
+		t.Errorf("mx note: %+v", mx)
+	}
+	if txt.Type != "TXT (report auth)" || txt.Host != "*._report._dmarc" || txt.Value != "v=DMARC1" {
+		t.Errorf("txt: %+v", txt)
+	}
+	if txt.Note != "RFC 7489 external-destination authorization: allows every other domain to send its DMARC reports to sys.example." {
+		t.Errorf("txt note: %+v", txt)
 	}
 }

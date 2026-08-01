@@ -12,6 +12,7 @@ type Config struct {
 	AdminPassword, AdminEmail      string
 	SystemFrom, EgressIP           string
 	PublicURL                      string
+	InboundListen                  string
 	SMTPPort, FailureRateMinVolume int
 	FailureRateThreshold           float64
 }
@@ -48,6 +49,14 @@ func Load() (*Config, error) {
 		if c.FailureRateThreshold, err = strconv.ParseFloat(s, 64); err != nil {
 			return nil, fmt.Errorf("DOEVOE_FAILURE_RATE_THRESHOLD: %w", err)
 		}
+	}
+	// DOEVOE_INBOUND_LISTEN is the SMTP listener for receiving DMARC aggregate
+	// reports. Unset → ":25". Explicitly set to "" → receiver disabled. Uses
+	// os.LookupEnv (not getdef) since unset and "" must be distinguishable.
+	if v, ok := os.LookupEnv("DOEVOE_INBOUND_LISTEN"); ok {
+		c.InboundListen = v
+	} else {
+		c.InboundListen = ":25"
 	}
 	return c, nil
 }

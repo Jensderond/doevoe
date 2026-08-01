@@ -104,6 +104,33 @@ func (n *Notifier) BlocklistCleared(target, zone string) {
 	}
 }
 
+// DMARCFailure is called by the inbound report handler when a stored report
+// shows our own egress IP failing DMARC for a domain — the "our signing or
+// DNS broke" early-warning. Reports arrive in bursts (one per reporter per
+// day), so a 24h per-domain cooldown in notify_state keeps that to one email
+// per domain per day. The cooldown is only recorded when the alert was
+// actually enqueued: a fail-open skip (system domain unverified) must not
+// swallow the next attempt.
+func (n *Notifier) DMARCFailure(domain string, count int) {
+	key := "dmarc_alert_" + domain
+	if last, _ := n.Store.GetState(key); last != "" {
+		if time.Now().UTC().Sub(store.ParseTime(last)) < 24*time.Hour {
+			return
+		}
+	}
+	sent, err := n.enqueue("doevoe: our mail is failing DMARC for "+domain,
+		fmt.Sprintf("A DMARC aggregate report shows %d message(s) from our own sending IP failing both DKIM and SPF evaluation for %s.\nThis usually means a DNS or signing problem on our side — check the domain's records.\n\n%s/admin/dmarc\n", count, domain, n.BaseURL))
+	if err != nil {
+		slog.Error("notifier: dmarc failure alert failed", "domain", domain, "err", err)
+		return
+	}
+	if sent {
+		if err := n.Store.SetState(key, store.FmtTime(time.Now().UTC())); err != nil {
+			slog.Error("notifier: setting dmarc cooldown failed", "domain", domain, "err", err)
+		}
+	}
+}
+
 func (n *Notifier) DigestTick(now time.Time) error {
 	pending, err := n.Store.ListPendingFailures()
 	if err != nil || len(pending) == 0 {

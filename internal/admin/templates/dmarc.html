@@ -1,0 +1,61 @@
+{{define "content"}}
+<div class="page-head">
+  <h1>DMARC</h1>
+</div>
+
+<nav class="period-bar" aria-label="Period">
+  {{range .Ranges}}
+    {{if .Active}}<span class="period-chip active" aria-current="true" title="{{.Title}}">{{.Label}}</span>
+    {{else}}<a class="period-chip" href="{{.URL}}" title="{{.Title}}">{{.Label}}</a>{{end}}
+  {{end}}
+  {{if eq .RangeKey "custom"}}<span class="period-chip active" aria-current="true">{{.WindowLabel}}</span>{{end}}
+</nav>
+
+<h2 class="section-title">Per-domain results</h2>
+<div class="list">
+{{range .Summary}}
+<div class="row">
+  <div class="row-top">
+    <span class="addr">{{.Domain}}</span>
+    <span class="chip sent">{{.Pass}} passed</span>
+    {{if gt .Fail 0}}<span class="chip failed">{{.Fail}} failed</span>{{end}}
+  </div>
+</div>
+{{else}}
+<p class="empty">No DMARC reports received in this period. Reports typically arrive daily once the rua address is published.</p>
+{{end}}
+</div>
+
+{{if .Sources}}
+<h2 class="section-title">Top failing sources</h2>
+<div class="list">
+{{range .Sources}}
+<div class="row">
+  <div class="row-top">
+    <span class="addr">{{.SourceIP}}</span>
+    <span class="chip failed">{{.Count}} failing</span>
+  </div>
+</div>
+{{end}}
+</div>
+{{end}}
+
+<h2 class="section-title">Reports</h2>
+<div class="list">
+{{range .Reports}}
+<div class="row">
+  <div class="row-top">
+    <span class="addr">{{.Domain}}</span>
+    <span>{{.Org}}</span>
+  </div>
+  <div class="row-meta">
+    <span>{{.RangeBegin}} &rarr; {{.RangeEnd}}</span>
+    <span>received {{.ReceivedAt}}</span>
+    <span>{{.RecordCount}} record(s)</span>
+  </div>
+</div>
+{{else}}
+<p class="empty">No DMARC reports received in this period.</p>
+{{end}}
+</div>
+{{end}}
