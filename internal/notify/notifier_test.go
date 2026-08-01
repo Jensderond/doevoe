@@ -406,3 +406,49 @@ func TestBlocklistNotificationsFailOpenUnverified(t *testing.T) {
 		t.Fatalf("unverified system domain must skip silently, got %d emails", got)
 	}
 }
+
+func TestDMARCFailureCooldown(t *testing.T) {
+	s, n, _ := fixture(t, true)
+
+	n.DMARCFailure("client.example", 14)
+	emails := systemEmails(t, s)
+	if len(emails) != 1 {
+		t.Fatalf("first alert: %d system emails, want 1", len(emails))
+	}
+	if !strings.Contains(emails[0].Subject, "client.example") ||
+		!strings.Contains(emails[0].BodyText, "14") {
+		t.Errorf("alert lacks domain/count: subject=%q body=%q", emails[0].Subject, emails[0].BodyText)
+	}
+
+	// Within the cooldown: silent.
+	n.DMARCFailure("client.example", 5)
+	if got := len(systemEmails(t, s)); got != 1 {
+		t.Fatalf("cooldown violated: %d emails, want 1", got)
+	}
+
+	// A different domain has its own cooldown.
+	n.DMARCFailure("other.example", 2)
+	if got := len(systemEmails(t, s)); got != 2 {
+		t.Fatalf("per-domain cooldown: %d emails, want 2", got)
+	}
+
+	// Cooldown expired: fires again.
+	s.SetState("dmarc_alert_client.example", store.FmtTime(time.Now().UTC().Add(-25*time.Hour)))
+	n.DMARCFailure("client.example", 7)
+	if got := len(systemEmails(t, s)); got != 3 {
+		t.Fatalf("after expiry: %d emails, want 3", got)
+	}
+}
+
+func TestDMARCFailureFailOpenUnverified(t *testing.T) {
+	s, n, _ := fixture(t, false)
+	n.DMARCFailure("client.example", 3)
+	if got := len(systemEmails(t, s)); got != 0 {
+		t.Fatalf("unverified system domain must skip silently, got %d", got)
+	}
+	// A skipped send must NOT start the cooldown — otherwise verifying the
+	// system domain within 24h of a failure silently swallows the alert.
+	if v, _ := s.GetState("dmarc_alert_client.example"); v != "" {
+		t.Fatalf("cooldown set despite skipped send: %q", v)
+	}
+}

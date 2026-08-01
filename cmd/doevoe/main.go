@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"doevoe/internal/dkimkeys"
 	"doevoe/internal/dnsbl"
 	"doevoe/internal/dnscheck"
+	"doevoe/internal/inbound"
 	"doevoe/internal/notify"
 	"doevoe/internal/store"
 )
@@ -62,10 +64,19 @@ func main() {
 		return dnscheck.Check(ctx, net.DefaultResolver, d.Name, d.DKIMSelector, pub, cfg.EgressIP)
 	}
 
+	// systemDomain/reportAddr: derived once from cfg.SystemFrom the same way
+	// notify.Notifier derives its own domain part (domain of "user@domain"),
+	// and shared by the admin UI's rendered DNS records and the inbound
+	// receiver's accepted RCPT below, so both always agree.
+	systemDomain := cfg.SystemFrom[strings.LastIndex(cfg.SystemFrom, "@")+1:]
+	reportAddr := "dmarc@" + systemDomain
+
 	adm := admin.New(s, cfg.AdminPassword, cfg.EgressIP, cfg.AdminEmail, cfg.Hostname)
 	adm.CheckDomain = checkDomain
 	adm.OnKeyCreated = notifier.KeyCreated
 	adm.OnKeyRevoked = notifier.KeyRevoked
+	adm.SystemDomain = systemDomain
+	adm.DMARCRua = reportAddr
 
 	mux := http.NewServeMux()
 	(&api.Server{Store: s}).Routes(mux)
@@ -77,7 +88,34 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 
+	// Bind the DMARC report receiver synchronously, before any background
+	// goroutine starts: a bind failure here is a misconfiguration (the
+	// operator asked for the receiver by not disabling it) and should exit
+	// the process the same way a missing required env var does, rather than
+	// surface later as a background error log.
+	var inboundListener net.Listener
+	if cfg.InboundListen != "" {
+		var err error
+		inboundListener, err = net.Listen("tcp", cfg.InboundListen)
+		if err != nil {
+			slog.Error("inbound listen", "addr", cfg.InboundListen, "err", err)
+			os.Exit(1)
+		}
+	}
+
 	var wg sync.WaitGroup
+	if inboundListener != nil {
+		inb := &inbound.Server{Store: s, ReportAddr: reportAddr, EgressIP: cfg.EgressIP,
+			Hostname: cfg.Hostname, OnOwnFailure: notifier.DMARCFailure}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := inb.Serve(ctx, inboundListener); err != nil {
+				slog.Error("inbound", "err", err)
+			}
+		}()
+		slog.Info("dmarc report receiver listening", "addr", cfg.InboundListen, "rcpt", reportAddr)
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -96,7 +134,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		blocklistLoop(ctx, s, notifier, cfg.EgressIP)
+		hourlyMaintenanceLoop(ctx, s, notifier, cfg.EgressIP)
 	}()
 
 	srv := &http.Server{
@@ -161,15 +199,16 @@ func recheckDNSLoop(ctx context.Context, s *store.Store, check func(context.Cont
 	}
 }
 
-// blocklistLoop periodically checks the egress IP and every verified domain
-// against the DNS blacklists in internal/dnsbl, persists determinate
+// hourlyMaintenanceLoop periodically checks the egress IP and every verified
+// domain against the DNS blacklists in internal/dnsbl, persists determinate
 // results, and notifies on listing transitions. Unverified domains are
-// skipped: they can't send, so their listing status is noise.
+// skipped: they can't send, so their listing status is noise. It also owns
+// hourly DMARC report retention, pruning reports older than 90 days.
 //
 // Unlike recheckDNSLoop it runs once shortly after boot: there is no manual
 // "check now" trigger for blacklists (domain verify covers DNS records), so
 // without the initial run a fresh install would show nothing for an hour.
-func blocklistLoop(ctx context.Context, s *store.Store, n *notify.Notifier, egressIP string) {
+func hourlyMaintenanceLoop(ctx context.Context, s *store.Store, n *notify.Notifier, egressIP string) {
 	run := func() {
 		domains, err := s.ListDomains()
 		if err != nil {
@@ -211,6 +250,12 @@ func blocklistLoop(ctx context.Context, s *store.Store, n *notify.Notifier, egre
 				slog.Info("blocklist: delisted", "target", st.Target, "zone", st.Zone)
 				n.BlocklistCleared(st.Target, st.Zone)
 			}
+		}
+
+		if pruned, err := s.PruneDMARCReports(store.FmtTime(time.Now().UTC().Add(-90 * 24 * time.Hour))); err != nil {
+			slog.Error("dmarc prune", "err", err)
+		} else if pruned > 0 {
+			slog.Info("dmarc prune", "reports", pruned)
 		}
 	}
 

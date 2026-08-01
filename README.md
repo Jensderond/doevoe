@@ -34,6 +34,13 @@ Before you deploy, make sure the host you're using can actually send mail:
   directly to the internet — put Caddy, nginx, or Traefik in front of it
   terminating TLS, and only forward to doevoe over localhost/a private
   network.
+- **Inbound TCP port 25 must be reachable from the internet** for the
+  built-in DMARC report receiver (`DOEVOE_INBOUND_LISTEN`, default `:25`) —
+  other mail providers connect to it directly to deliver aggregate reports,
+  the same way doevoe connects out to their MX servers. `docker-compose.yml`
+  publishes `25:25` for this; open it in any host firewall/security group,
+  or set `DOEVOE_INBOUND_LISTEN=` (empty) to disable the receiver if you
+  don't want it.
 
 ## Quickstart
 
@@ -137,6 +144,7 @@ exits immediately with an error.
 | `DOEVOE_SMTP_PORT` | no | `25` | Outbound SMTP port used to connect to recipient MX servers |
 | `DOEVOE_FAILURE_RATE_MIN_VOLUME` | no | `10` | Minimum delivery attempts in the trailing hour before the failure-rate alert can fire for a domain |
 | `DOEVOE_FAILURE_RATE_THRESHOLD` | no | `0.2` | Failure ratio (0–1) over the trailing hour that triggers the failure-rate alert |
+| `DOEVOE_INBOUND_LISTEN` | no | `:25` | SMTP listen address for the built-in DMARC aggregate-report receiver; set to an empty value to disable it entirely |
 
 ## Delivery and retries
 
@@ -233,6 +241,49 @@ than treating it as a listing — run doevoe on a host using its own
 resolver (not a public DNS forwarder) for reliable results. The egress-IP
 checks are IPv4-only: if `DOEVOE_EGRESS_IP` isn't a valid IPv4 address, those
 checks report inconclusive rather than a listing.
+
+## DMARC reports
+
+doevoe has a built-in SMTP receiver for DMARC aggregate reports, listening
+on `DOEVOE_INBOUND_LISTEN` (default `:25`) at `dmarc@<system domain>` (the
+domain part of `DOEVOE_SYSTEM_FROM`). Every domain's generated DNS records
+page now points its `rua` at that address, so once a domain is verified,
+other mail providers start sending it their aggregate reports automatically
+— no separate mailbox or third-party report-viewing service required.
+
+The system domain itself needs two extra one-time DNS records, shown on its
+own domain page: an MX record pointing at `DOEVOE_HOSTNAME` (so other
+providers can actually connect and deliver), and a wildcard
+`*._report._dmarc` TXT record (the RFC 7489 authorization that lets every
+*other* domain's DMARC policy legitimately name this system domain as its
+report destination).
+
+Incoming reports are parsed and stored, viewable per-domain at
+`/admin/dmarc`, and pruned automatically after 90 days
+(`hourlyMaintenanceLoop` in `cmd/doevoe/main.go`, alongside the blacklist
+checks). If a report shows `DOEVOE_EGRESS_IP` itself failing both DKIM and
+SPF for a domain, doevoe sends an alert to `DOEVOE_ADMIN_EMAIL` — that's a
+signal something is wrong with doevoe's own sending setup (SPF/DKIM
+misconfiguration, IP reputation issue), not with the recipient's domain.
+
+Set `DOEVOE_INBOUND_LISTEN=` (empty) to disable the receiver if you don't
+want doevoe listening on port 25 at all; a bind failure (e.g. port already
+in use, or the process lacks permission to bind privileged ports) is treated
+as a startup misconfiguration and exits immediately, the same as a missing
+required environment variable. Disabling the receiver does **not** change
+the recommended `rua=` DNS records — only disable it if you don't want DMARC
+reports at all, otherwise other providers' reports will keep being sent to a
+dead MX.
+
+### Upgrading
+
+This version listens on `:25` by default and **exits at startup if it
+cannot bind** that address — previous versions never touched port 25 at
+all. This matters most on bare-metal/non-root hosts, or hosts already
+running another MTA on port 25 (Docker deployments are unaffected, since
+`docker-compose.yml`'s `25:25` publish is new and additive). If you're
+upgrading and don't want this behavior yet, set `DOEVOE_INBOUND_LISTEN=`
+(empty) to keep the prior behavior of not listening on port 25.
 
 ## Backups
 
