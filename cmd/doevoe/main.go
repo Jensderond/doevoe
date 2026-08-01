@@ -182,6 +182,10 @@ func blocklistLoop(ctx context.Context, s *store.Store, n *notify.Notifier, egre
 				names = append(names, d.Name)
 			}
 		}
+		// This budget is shared across all 3 + 2N lookups (egress IP zones
+		// plus two zones per verified domain), run serially by dnsbl.Check —
+		// revisit if the number of verified domains grows large enough that
+		// 2 minutes stops being enough time for every lookup to complete.
 		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		statuses := dnsbl.Check(checkCtx, net.DefaultResolver, egressIP, names)
 		cancel()

@@ -73,9 +73,11 @@ blocklist_events(id INTEGER PK, target TEXT, zone TEXT, listed INTEGER,
 ```
 
 New tables only — `CREATE TABLE IF NOT EXISTS` in the schema constant
-suffices, no `migrate()` step needed. `UpsertBlocklistStatus` returns the
-previous `listed` value (or "unknown" on first sight) so the caller can
-detect transitions; `ListBlocklistProblems` feeds the dashboard.
+suffices, no `migrate()` step needed. `RecordBlocklistCheck` persists a
+determinate result and returns the transition it caused ("listed",
+"cleared", or "" for steady state) so the caller can detect transitions;
+`ListBlocklistStatus` feeds the dashboard's current-status view, and
+`RecentBlocklistEvents` feeds its history view.
 
 `blocklist_events` is the append-only history: one row per **transition**
 (listed / cleared), written in the same transaction as the status upsert.

@@ -18,7 +18,7 @@
 <h2 class="section-title">Blacklists</h2>
 <div class="list">
   {{if not .BlocklistChecked}}
-    <p class="empty">No blacklist checks recorded yet — the first check runs about a minute after startup.</p>
+    <p class="empty">No blacklist checks recorded yet — the first check runs about a minute after startup, and inconclusive checks (public DNS resolvers are refused by some blacklists; see README) are not recorded.</p>
   {{else if .BlocklistListings}}
     {{range .BlocklistListings}}
     <div class="row">
@@ -26,7 +26,7 @@
         <span class="chip failed">listed</span>
         <span class="addr">{{.Target}}</span>
       </div>
-      <div class="row-meta"><span>{{.Zone}}</span><span>since {{.Since}}</span></div>
+      <div class="row-meta"><span>{{.Zone}}</span><span>since {{.Since}}</span><span>last checked {{.LastChecked}}</span></div>
     </div>
     {{end}}
   {{else}}

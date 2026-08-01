@@ -230,7 +230,9 @@ If a lookup's answer isn't a clear listed/not-listed (for example, Spamhaus
 returns a distinct code when it refuses to answer public resolvers like
 Google's `8.8.8.8` or Cloudflare's `1.1.1.1`), doevoe skips that check rather
 than treating it as a listing — run doevoe on a host using its own
-resolver (not a public DNS forwarder) for reliable results.
+resolver (not a public DNS forwarder) for reliable results. The egress-IP
+checks are IPv4-only: if `DOEVOE_EGRESS_IP` isn't a valid IPv4 address, those
+checks report inconclusive rather than a listing.
 
 ## Backups
 

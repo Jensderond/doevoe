@@ -388,6 +388,9 @@ func TestDashboardBlocklistBlock(t *testing.T) {
 
 	// Active listing shows target + zone, and the transition appears in history.
 	s.RecordBlocklistCheck("client.example", "dbl.spamhaus.org", true, "2026-08-01T11:00:00Z")
+	// A later, distinct check timestamp so the listed row's LastChecked is
+	// unambiguous (it must differ from Since, recorded above).
+	s.RecordBlocklistCheck("client.example", "dbl.spamhaus.org", true, "2026-08-01T12:00:00Z")
 	resp, err = c.Get(srv.URL + "/admin/")
 	if err != nil {
 		t.Fatal(err)
@@ -398,5 +401,8 @@ func TestDashboardBlocklistBlock(t *testing.T) {
 	}
 	if !strings.Contains(body, "Listed") {
 		t.Errorf("event history missing from dashboard")
+	}
+	if !strings.Contains(body, "2026-08-01T12:00:00Z") {
+		t.Errorf("listed row's LastChecked timestamp missing from dashboard")
 	}
 }
