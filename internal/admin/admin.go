@@ -360,6 +360,19 @@ func (a *Admin) dashboard(w http.ResponseWriter, r *http.Request) {
 	domainStats, _ := a.Store.DomainVolume(from, to)
 	reasons, _ := a.Store.FailureReasons(from, to, 8)
 
+	blStatus, _ := a.Store.ListBlocklistStatus()
+	blEvents, _ := a.Store.RecentBlocklistEvents(10)
+	var blListings []store.BlocklistStatus
+	blLastChecked := ""
+	for _, st := range blStatus {
+		if st.Listed {
+			blListings = append(blListings, st)
+		}
+		if st.LastChecked > blLastChecked { // RFC3339 sorts lexicographically
+			blLastChecked = st.LastChecked
+		}
+	}
+
 	// Fill gaps so the time axis is continuous across the whole range.
 	byDay := map[string]store.DayCount{}
 	for _, d := range daily {
@@ -396,9 +409,13 @@ func (a *Admin) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.render(w, r, "dashboard", map[string]any{
-		"Days":     days,
-		"Summary":  summary,
-		"DataJSON": template.JS(blob),
+		"Days":               days,
+		"Summary":            summary,
+		"DataJSON":           template.JS(blob),
+		"BlocklistChecked":   len(blStatus) > 0,
+		"BlocklistListings":  blListings,
+		"BlocklistLastCheck": blLastChecked,
+		"BlocklistEvents":    blEvents,
 	})
 }
 
