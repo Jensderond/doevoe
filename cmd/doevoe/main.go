@@ -21,6 +21,7 @@ import (
 	"doevoe/internal/config"
 	"doevoe/internal/delivery"
 	"doevoe/internal/dkimkeys"
+	"doevoe/internal/dnsbl"
 	"doevoe/internal/dnscheck"
 	"doevoe/internal/notify"
 	"doevoe/internal/store"
@@ -92,6 +93,11 @@ func main() {
 		defer wg.Done()
 		recheckDNSLoop(ctx, s, checkDomain) // hourly re-verification per spec
 	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		blocklistLoop(ctx, s, notifier, cfg.EgressIP)
+	}()
 
 	srv := &http.Server{
 		Addr:    cfg.Listen,
@@ -151,6 +157,73 @@ func recheckDNSLoop(ctx context.Context, s *store.Store, check func(context.Cont
 				}
 				s.SetDomainVerification(d.ID, res.SPF.OK, res.DKIM.OK, res.DMARC.OK, store.Now())
 			}
+		}
+	}
+}
+
+// blocklistLoop periodically checks the egress IP and every verified domain
+// against the DNS blacklists in internal/dnsbl, persists determinate
+// results, and notifies on listing transitions. Unverified domains are
+// skipped: they can't send, so their listing status is noise.
+//
+// Unlike recheckDNSLoop it runs once shortly after boot: there is no manual
+// "check now" trigger for blacklists (domain verify covers DNS records), so
+// without the initial run a fresh install would show nothing for an hour.
+func blocklistLoop(ctx context.Context, s *store.Store, n *notify.Notifier, egressIP string) {
+	run := func() {
+		domains, err := s.ListDomains()
+		if err != nil {
+			slog.Error("blocklist: list domains", "err", err)
+			return
+		}
+		var names []string
+		for _, d := range domains {
+			if d.Verified() {
+				names = append(names, d.Name)
+			}
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		statuses := dnsbl.Check(checkCtx, net.DefaultResolver, egressIP, names)
+		cancel()
+		for _, st := range statuses {
+			if st.Verdict == dnsbl.Indeterminate {
+				// Transient failure or a Spamhaus "public resolver" code:
+				// not a genuine answer, so never persisted and never
+				// alerted — same rule as the indeterminate DNS rechecks.
+				slog.Warn("blocklist check indeterminate; not persisting",
+					"target", st.Target, "zone", st.Zone, "response", st.Response)
+				continue
+			}
+			transition, err := s.RecordBlocklistCheck(st.Target, st.Zone, st.Verdict == dnsbl.Listed, store.Now())
+			if err != nil {
+				slog.Error("blocklist: record check", "target", st.Target, "zone", st.Zone, "err", err)
+				continue
+			}
+			switch transition {
+			case "listed":
+				slog.Warn("blocklist: newly listed", "target", st.Target, "zone", st.Zone, "response", st.Response)
+				n.BlocklistHit(st.Target, st.Zone)
+			case "cleared":
+				slog.Info("blocklist: delisted", "target", st.Target, "zone", st.Zone)
+				n.BlocklistCleared(st.Target, st.Zone)
+			}
+		}
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(time.Minute):
+	}
+	run()
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			run()
 		}
 	}
 }
