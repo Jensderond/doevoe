@@ -378,3 +378,31 @@ func TestMonthlyStatsHandlesMonthEndOverflow(t *testing.T) {
 		t.Fatalf("state: %q", v)
 	}
 }
+
+func TestBlocklistNotifications(t *testing.T) {
+	s, n, _ := fixture(t, true)
+
+	n.BlocklistHit("203.0.113.7", "zen.spamhaus.org")
+	emails := systemEmails(t, s)
+	if len(emails) != 1 {
+		t.Fatalf("after hit: %d system emails, want 1", len(emails))
+	}
+	if !strings.Contains(emails[0].Subject, "zen.spamhaus.org") ||
+		!strings.Contains(emails[0].BodyText, "203.0.113.7") {
+		t.Errorf("hit email lacks zone/target: subject=%q body=%q", emails[0].Subject, emails[0].BodyText)
+	}
+
+	n.BlocklistCleared("203.0.113.7", "zen.spamhaus.org")
+	emails = systemEmails(t, s)
+	if len(emails) != 2 {
+		t.Fatalf("after clear: %d system emails, want 2", len(emails))
+	}
+}
+
+func TestBlocklistNotificationsFailOpenUnverified(t *testing.T) {
+	s, n, _ := fixture(t, false) // system domain not verified
+	n.BlocklistHit("203.0.113.7", "zen.spamhaus.org")
+	if got := len(systemEmails(t, s)); got != 0 {
+		t.Fatalf("unverified system domain must skip silently, got %d emails", got)
+	}
+}

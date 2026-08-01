@@ -86,6 +86,24 @@ func (n *Notifier) KeyRevoked(name, domainName string) {
 	}
 }
 
+// BlocklistHit and BlocklistCleared are called by the blocklist loop on a
+// listing transition (the stored previous state in blocklist_status is the
+// arm/re-arm mechanism, so each fires at most once per transition).
+
+func (n *Notifier) BlocklistHit(target, zone string) {
+	if _, err := n.enqueue("doevoe: "+target+" is LISTED on "+zone,
+		fmt.Sprintf("%s is now listed on the %s blacklist.\n\nRecipient servers consulting this list may reject or junk-folder mail. Check the listing and request delisting via the operator's site.\n\n%s/admin/\n", target, zone, n.BaseURL)); err != nil {
+		slog.Error("notifier: blocklist hit notification failed", "target", target, "zone", zone, "err", err)
+	}
+}
+
+func (n *Notifier) BlocklistCleared(target, zone string) {
+	if _, err := n.enqueue("doevoe: "+target+" delisted from "+zone,
+		fmt.Sprintf("%s is no longer listed on the %s blacklist.\n\n%s/admin/\n", target, zone, n.BaseURL)); err != nil {
+		slog.Error("notifier: blocklist cleared notification failed", "target", target, "zone", zone, "err", err)
+	}
+}
+
 func (n *Notifier) DigestTick(now time.Time) error {
 	pending, err := n.Store.ListPendingFailures()
 	if err != nil || len(pending) == 0 {
