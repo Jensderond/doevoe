@@ -78,6 +78,21 @@ CREATE TABLE IF NOT EXISTS notify_pending_failures (
   email_id INTEGER PRIMARY KEY REFERENCES emails(id),
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS blocklist_status (
+  target TEXT NOT NULL,
+  zone TEXT NOT NULL,
+  listed INTEGER NOT NULL,
+  since TEXT NOT NULL,
+  last_checked TEXT NOT NULL,
+  PRIMARY KEY (target, zone)
+);
+CREATE TABLE IF NOT EXISTS blocklist_events (
+  id INTEGER PRIMARY KEY,
+  target TEXT NOT NULL,
+  zone TEXT NOT NULL,
+  listed INTEGER NOT NULL,
+  occurred_at TEXT NOT NULL
+);
 `
 
 func Open(path string) (*Store, error) {

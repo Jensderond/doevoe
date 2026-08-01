@@ -15,6 +15,34 @@
   <div class="kpi"><span class="kpi-num">{{.Summary.Queued}}</span><span class="kpi-label">In flight</span></div>
 </div>
 
+<h2 class="section-title">Blacklists</h2>
+<div class="list">
+  {{if not .BlocklistChecked}}
+    <p class="empty">No blacklist checks recorded yet — the first check runs about a minute after startup, and inconclusive checks (public DNS resolvers are refused by some blacklists; see README) are not recorded.</p>
+  {{else if .BlocklistListings}}
+    {{range .BlocklistListings}}
+    <div class="row">
+      <div class="row-top">
+        <span class="chip failed">listed</span>
+        <span class="addr">{{.Target}}</span>
+      </div>
+      <div class="row-meta"><span>{{.Zone}}</span><span>since {{.Since}}</span><span>last checked {{.LastChecked}}</span></div>
+    </div>
+    {{end}}
+  {{else}}
+    <p class="empty">All clear — last checked {{.BlocklistLastCheck}}.</p>
+  {{end}}
+</div>
+
+{{if .BlocklistEvents}}
+<h2 class="section-title">History</h2>
+<div class="list">
+  {{range .BlocklistEvents}}
+  <div class="row">{{.OccurredAt}} &mdash; {{.Target}} {{if .Listed}}Listed on{{else}}Cleared from{{end}} {{.Zone}}</div>
+  {{end}}
+</div>
+{{end}}
+
 <h2 class="section-title">Volume over time</h2>
 <div class="card chart-card">
   <div class="chart chart-volume" id="chart-volume"></div>

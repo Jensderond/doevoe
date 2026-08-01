@@ -360,3 +360,49 @@ func TestDashboardRangeToggle(t *testing.T) {
 		t.Error("range=7 should mark the 7d toggle active")
 	}
 }
+
+func TestDashboardBlocklistBlock(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+
+	// No checks recorded yet.
+	resp, err := c.Get(srv.URL + "/admin/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "No blacklist checks recorded yet") {
+		t.Errorf("empty state missing from dashboard")
+	}
+
+	// All clear.
+	s.RecordBlocklistCheck("203.0.113.7", "zen.spamhaus.org", false, "2026-08-01T10:00:00Z")
+	resp, err = c.Get(srv.URL + "/admin/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = readBody(t, resp)
+	if !strings.Contains(body, "All clear") {
+		t.Errorf("all-clear state missing from dashboard")
+	}
+
+	// Active listing shows target + zone, and the transition appears in history.
+	s.RecordBlocklistCheck("client.example", "dbl.spamhaus.org", true, "2026-08-01T11:00:00Z")
+	// A later, distinct check timestamp so the listed row's LastChecked is
+	// unambiguous (it must differ from Since, recorded above).
+	s.RecordBlocklistCheck("client.example", "dbl.spamhaus.org", true, "2026-08-01T12:00:00Z")
+	resp, err = c.Get(srv.URL + "/admin/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = readBody(t, resp)
+	if !strings.Contains(body, "dbl.spamhaus.org") || !strings.Contains(body, "client.example") {
+		t.Errorf("active listing missing from dashboard")
+	}
+	if !strings.Contains(body, "Listed") {
+		t.Errorf("event history missing from dashboard")
+	}
+	if !strings.Contains(body, "2026-08-01T12:00:00Z") {
+		t.Errorf("listed row's LastChecked timestamp missing from dashboard")
+	}
+}
