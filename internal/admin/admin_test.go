@@ -406,3 +406,41 @@ func TestDashboardBlocklistBlock(t *testing.T) {
 		t.Errorf("listed row's LastChecked timestamp missing from dashboard")
 	}
 }
+
+func TestDMARCPage(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+
+	// Empty state.
+	resp, err := c.Get(srv.URL + "/admin/dmarc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != 200 || !strings.Contains(body, "No DMARC reports") {
+		t.Fatalf("empty state: status=%d", resp.StatusCode)
+	}
+
+	// Seed one report: 11 passing + 3 failing messages for client.example.
+	rep := &store.DMARCReport{Org: "google.com", ReportID: "r-1", Domain: "client.example",
+		RangeBegin: "2026-08-01T00:00:00Z", RangeEnd: "2026-08-02T00:00:00Z",
+		ReceivedAt: store.Now(), Raw: "<feedback/>"}
+	recs := []store.DMARCRecord{
+		{SourceIP: "203.0.113.7", Count: 11, DKIM: "pass", SPF: "pass"},
+		{SourceIP: "198.51.100.9", Count: 3, DKIM: "fail", SPF: "fail"},
+	}
+	if _, _, err := s.InsertDMARCReport(rep, recs); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err = c.Get(srv.URL + "/admin/dmarc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = readBody(t, resp)
+	for _, want := range []string{"client.example", "google.com", "198.51.100.9", "11", "3"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dmarc page missing %q", want)
+		}
+	}
+}
