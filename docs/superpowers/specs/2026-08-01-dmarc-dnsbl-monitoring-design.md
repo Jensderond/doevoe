@@ -1,7 +1,7 @@
 # DMARC report ingestion + DNSBL blacklist monitoring
 
 **Date:** 2026-08-01
-**Status:** Approved (design)
+**Status:** Phase 1 implemented; Phase 2 (DMARC ingestion) pending
 **Scope:** Early detection of deliverability problems: (1) hourly DNS-blacklist
 checks for the egress IP and every verified domain, alerting on new listings;
 (2) receiving, parsing, storing, and visualizing DMARC aggregate reports, with

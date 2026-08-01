@@ -220,6 +220,18 @@ verified for notifications to actually go out) in these cases:
 All of the above run on a one-minute internal ticker; none of it blocks
 sending.
 
+## Blacklist monitoring
+
+Every hour, doevoe checks its egress IP against Spamhaus ZEN, SpamCop, and
+Barracuda, and every verified domain against Spamhaus DBL and SURBL. A new
+listing or a delisting emails `DOEVOE_ADMIN_EMAIL`, and the admin dashboard
+shows current status plus listing history for the egress IP and each domain.
+If a lookup's answer isn't a clear listed/not-listed (for example, Spamhaus
+returns a distinct code when it refuses to answer public resolvers like
+Google's `8.8.8.8` or Cloudflare's `1.1.1.1`), doevoe skips that check rather
+than treating it as a listing — run doevoe on a host using its own
+resolver (not a public DNS forwarder) for reliable results.
+
 ## Backups
 
 The database is a single SQLite file at `$DOEVOE_DATA_DIR/doevoe.db`,
