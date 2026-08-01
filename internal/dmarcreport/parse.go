@@ -67,8 +67,11 @@ func Parse(r io.Reader) (*Report, error) {
 	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("dmarc xml: %w", err)
 	}
-	if f.ReportMetadata.OrgName == "" || f.ReportMetadata.ReportID == "" {
-		return nil, fmt.Errorf("dmarc xml: missing org_name or report_id")
+	if f.ReportMetadata.OrgName == "" {
+		return nil, fmt.Errorf("dmarc xml: missing org_name")
+	}
+	if f.ReportMetadata.ReportID == "" {
+		return nil, fmt.Errorf("dmarc xml: missing report_id")
 	}
 	if f.PolicyPublished.Domain == "" {
 		return nil, fmt.Errorf("dmarc xml: missing policy_published domain")
