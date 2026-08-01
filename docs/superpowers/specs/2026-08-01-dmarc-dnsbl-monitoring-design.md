@@ -68,12 +68,22 @@ domain zones. Each `Status{Target, Zone, Verdict}` has verdict:
 ```
 blocklist_status(target TEXT, zone TEXT, listed INTEGER,
                  since TEXT, last_checked TEXT, PRIMARY KEY(target, zone))
+blocklist_events(id INTEGER PK, target TEXT, zone TEXT, listed INTEGER,
+                 occurred_at TEXT)
 ```
 
-New table only — `CREATE TABLE IF NOT EXISTS` in the schema constant suffices,
-no `migrate()` step needed. `UpsertBlocklistStatus` returns the previous
-`listed` value (or "unknown" on first sight) so the caller can detect
-transitions; `ListBlocklistProblems` feeds the dashboard.
+New tables only — `CREATE TABLE IF NOT EXISTS` in the schema constant
+suffices, no `migrate()` step needed. `UpsertBlocklistStatus` returns the
+previous `listed` value (or "unknown" on first sight) so the caller can
+detect transitions; `ListBlocklistProblems` feeds the dashboard.
+
+`blocklist_events` is the append-only history: one row per **transition**
+(listed / cleared), written in the same transaction as the status upsert.
+Transitions — not hourly snapshots — are the stored grain: snapshots would be
+thousands of redundant "still clear" rows per month, while transitions plus
+`last_checked` reconstruct the full timeline losslessly. They're rare enough
+to keep indefinitely (no retention), so the dashboard can answer "have we
+ever been listed, when, and for how long" without any live lookup.
 
 ### Loop + alerting
 
@@ -93,7 +103,9 @@ cooldown needed, because the upsert only reports a transition once.
 ### Admin UI
 
 Dashboard gets a small block: "Blacklists: all clear (last checked …)" or a
-table of active listings (target, zone, since). No new page.
+table of active listings (target, zone, since), plus the most recent
+`blocklist_events` rows (e.g. last 10) so past listings and their clear
+times stay visible after recovery. No new page.
 
 ## Phase 2: DMARC report ingestion
 
@@ -204,8 +216,10 @@ non-empty), shut down via the same signal context, and joins the existing
 - `inbound`: end-to-end test — go-smtp client delivers a gzipped fixture to
   the listener on a random port, assert rows in a temp store; RCPT rejection;
   oversize rejection; malformed report accepted-and-dropped.
-- `store`: upsert transition semantics for `blocklist_status`; dedup
-  constraint and transactional insert for DMARC tables; retention pruning.
+- `store`: upsert transition semantics for `blocklist_status` including the
+  transactional `blocklist_events` append (event written on transition, none
+  on steady state); dedup constraint and transactional insert for DMARC
+  tables; retention pruning.
 - `notify`: the three new notification methods, mirroring existing tests.
 
 ## Out of scope / follow-ups
