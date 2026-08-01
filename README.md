@@ -270,7 +270,20 @@ Set `DOEVOE_INBOUND_LISTEN=` (empty) to disable the receiver if you don't
 want doevoe listening on port 25 at all; a bind failure (e.g. port already
 in use, or the process lacks permission to bind privileged ports) is treated
 as a startup misconfiguration and exits immediately, the same as a missing
-required environment variable.
+required environment variable. Disabling the receiver does **not** change
+the recommended `rua=` DNS records — only disable it if you don't want DMARC
+reports at all, otherwise other providers' reports will keep being sent to a
+dead MX.
+
+### Upgrading
+
+This version listens on `:25` by default and **exits at startup if it
+cannot bind** that address — previous versions never touched port 25 at
+all. This matters most on bare-metal/non-root hosts, or hosts already
+running another MTA on port 25 (Docker deployments are unaffected, since
+`docker-compose.yml`'s `25:25` publish is new and additive). If you're
+upgrading and don't want this behavior yet, set `DOEVOE_INBOUND_LISTEN=`
+(empty) to keep the prior behavior of not listening on port 25.
 
 ## Backups
 

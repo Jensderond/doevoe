@@ -114,12 +114,12 @@ func TestFromEmailNoReportFound(t *testing.T) {
 }
 
 func TestFromEmailDecompressionCap(t *testing.T) {
-	// A ~200MB-of-zeros gzip is a few hundred KB compressed; extraction must
-	// stop at MaxXMLBytes instead of inflating it all.
+	// A ~10MB-of-zeros gzip is tiny compressed; extraction must stop at
+	// MaxXMLBytes (5MB) instead of inflating it all.
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
 	chunk := bytes.Repeat([]byte{0}, 1<<20)
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 10; i++ {
 		gw.Write(chunk)
 	}
 	gw.Close()
@@ -214,13 +214,13 @@ func TestFromEmailNestedMultipart(t *testing.T) {
 
 func TestFromEmailZipDecompressionCap(t *testing.T) {
 	// Mirror TestFromEmailDecompressionCap but with a zip containing a huge .xml entry.
-	// A ~200MB XML file in a zip is a couple MB compressed; extraction must
-	// stop at MaxXMLBytes instead of inflating it all.
+	// A ~10MB XML file in a zip is tiny compressed; extraction must stop at
+	// MaxXMLBytes (5MB) instead of inflating it all.
 	var zipBuf bytes.Buffer
 	zw := zip.NewWriter(&zipBuf)
 	f, _ := zw.Create("huge.xml")
 	chunk := bytes.Repeat([]byte{0}, 1<<20)
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 10; i++ {
 		f.Write(chunk)
 	}
 	zw.Close()

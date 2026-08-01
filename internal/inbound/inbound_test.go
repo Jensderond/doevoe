@@ -88,6 +88,32 @@ func reportMsg(reportID, sourceIP, dkim, spf string, count int) string {
 	return "From: reporter@google.com\r\nTo: dmarc@sys.example\r\nSubject: report\r\nMIME-Version: 1.0\r\nContent-Type: application/xml\r\n\r\n" + xml
 }
 
+// twoRecordReportMsg builds a report with two <record> rows, both fail/fail,
+// so the own-failure count-summing behavior (across records, not just the
+// first) can be tested.
+func twoRecordReportMsg(reportID, ip1 string, count1 int, ip2 string, count2 int) string {
+	rec := func(ip string, count int) string {
+		return `<record><row><source_ip>` + ip + `</source_ip><count>` + strconv.Itoa(count) + `</count><policy_evaluated><disposition>none</disposition><dkim>fail</dkim><spf>fail</spf></policy_evaluated></row><identifiers><header_from>client.example</header_from></identifiers></record>`
+	}
+	xml := `<feedback><report_metadata><org_name>google.com</org_name><report_id>` + reportID + `</report_id><date_range><begin>1753999200</begin><end>1754085600</end></date_range></report_metadata><policy_published><domain>client.example</domain></policy_published>` +
+		rec(ip1, count1) + rec(ip2, count2) + `</feedback>`
+	return "From: reporter@google.com\r\nTo: dmarc@sys.example\r\nSubject: report\r\nMIME-Version: 1.0\r\nContent-Type: application/xml\r\n\r\n" + xml
+}
+
+// seedVerifiedDomain creates and fully verifies a domain in s, standing in
+// for the domain-management flow that runs before a domain can legitimately
+// send (and thus before a genuine own-failure report can concern it).
+func seedVerifiedDomain(t *testing.T, s *store.Store, name string) {
+	t.Helper()
+	d, err := s.CreateDomain(name, "mail1", "PEM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDomainVerification(d.ID, true, true, true, store.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Data() stores synchronously before replying 250, so a returned deliver()
 // means the report is already in (or knowingly dropped from) the store — no
 // polling needed.
@@ -140,8 +166,10 @@ func TestDuplicateAccepted(t *testing.T) {
 }
 
 func TestOwnFailureTriggersCallback(t *testing.T) {
-	_, addr, alerts := startServer(t)
-	// Source IP == EgressIP, both dkim and spf fail → callback.
+	s, addr, alerts := startServer(t)
+	seedVerifiedDomain(t, s, "client.example")
+	// Source IP == EgressIP, both dkim and spf fail, domain is a verified
+	// managed domain → callback.
 	if err := deliver(t, addr, "dmarc@sys.example", reportMsg("rid-own", "203.0.113.7", "fail", "fail", 14)); err != nil {
 		t.Fatal(err)
 	}
@@ -159,4 +187,55 @@ func TestOtherIPFailureNoCallback(t *testing.T) {
 	if len(*alerts) != 0 {
 		t.Fatalf("spoofing by other IPs must not alert: %+v", *alerts)
 	}
+}
+
+// TestOwnFailureUnmanagedDomainNoCallback is the anti-flooding regression:
+// EgressIP is public (it's in every domain's published SPF record), and
+// reports are attacker-supplied with an attacker-chosen policy_published
+// domain. Without gating on a known, verified domain, an attacker could mint
+// unlimited unique forged domains — each dodging notify's per-domain
+// cooldown — and flood the admin mailbox. Here client.example is never
+// created in the store, so even a report claiming an own-IP double failure
+// must store fine but must NOT alert.
+func TestOwnFailureUnmanagedDomainNoCallback(t *testing.T) {
+	s, addr, alerts := startServer(t)
+	if err := deliver(t, addr, "dmarc@sys.example", reportMsg("rid-unmanaged", "203.0.113.7", "fail", "fail", 5)); err != nil {
+		t.Fatal(err)
+	}
+	mustCount(t, s, 1)
+	if len(*alerts) != 0 {
+		t.Fatalf("unmanaged domain must not alert: %+v", *alerts)
+	}
+}
+
+// TestOwnFailureSumsAcrossRecords checks ownFailures accumulates over every
+// matching record in the report, not just the first.
+func TestOwnFailureSumsAcrossRecords(t *testing.T) {
+	s, addr, alerts := startServer(t)
+	seedVerifiedDomain(t, s, "client.example")
+	msg := twoRecordReportMsg("rid-multi", "203.0.113.7", 3, "203.0.113.7", 4)
+	if err := deliver(t, addr, "dmarc@sys.example", msg); err != nil {
+		t.Fatal(err)
+	}
+	mustCount(t, s, 1)
+	if len(*alerts) != 1 || (*alerts)[0].Count != 7 {
+		t.Fatalf("alerts: %+v, want single alert with count 7", *alerts)
+	}
+}
+
+// TestOversizeMessageRejected: a message well over maxMessageBytes must
+// never end up stored — either go-smtp's own MaxMessageBytes/line-length
+// enforcement rejects it outright (surfacing as an error on Data, the
+// client's write, or its close), or, if the SMTP layer lets it through,
+// dmarcreport's own size cap makes it unparsable and it gets dropped. Either
+// way, nothing should be stored.
+func TestOversizeMessageRejected(t *testing.T) {
+	s, addr, _ := startServer(t)
+	filler := strings.Repeat("A", maxMessageBytes+(1<<20))
+	msg := "From: reporter@google.com\r\nTo: dmarc@sys.example\r\nSubject: report\r\n" +
+		"MIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\n" + filler
+	if err := deliver(t, addr, "dmarc@sys.example", msg); err == nil {
+		t.Fatal("expected oversize message to be rejected")
+	}
+	mustCount(t, s, 0)
 }

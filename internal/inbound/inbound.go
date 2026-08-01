@@ -7,6 +7,7 @@
 package inbound
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -23,6 +24,14 @@ import (
 const (
 	maxMessageBytes = 15 << 20
 	ioTimeout       = 2 * time.Minute
+	// maxConcurrentData caps how many Data() calls run at once. Port 25 is
+	// unauthenticated, so any number of connections can pile in; each one
+	// holds roughly three copies of a multi-MB payload in memory at once
+	// (raw MIME bytes, decoded/decompressed XML, and the store's copy before
+	// insert). Without a cap, concurrent connections multiply that
+	// unboundedly — this keeps total worst-case memory a small, fixed
+	// multiple of maxMessageBytes regardless of connection count.
+	maxConcurrentData = 4
 )
 
 type Server struct {
@@ -33,17 +42,23 @@ type Server struct {
 	// OnOwnFailure fires when a stored report shows EgressIP failing both
 	// DKIM and SPF — wired to notify.DMARCFailure (which owns the cooldown).
 	OnOwnFailure func(domain string, count int)
+
+	dataSem chan struct{} // lazily initialized by Serve; see maxConcurrentData
 }
 
 // Serve serves SMTP on l until ctx is cancelled, then shuts down gracefully.
 // The caller owns the listener: main.go binds at startup (so a bind failure
 // exits like any other misconfiguration), tests bind 127.0.0.1:0.
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
+	if s.dataSem == nil {
+		s.dataSem = make(chan struct{}, maxConcurrentData)
+	}
 	srv := smtp.NewServer(smtp.BackendFunc(func(c *smtp.Conn) (smtp.Session, error) {
 		return &session{srv: s}, nil
 	}))
 	srv.Domain = s.Hostname
 	srv.MaxMessageBytes = maxMessageBytes
+	srv.MaxRecipients = 1 // one mailbox: dmarc@<system domain>
 	srv.ReadTimeout = ioTimeout
 	srv.WriteTimeout = ioTimeout
 
@@ -81,6 +96,9 @@ func (se *session) Rcpt(to string, opts *smtp.RcptOptions) error {
 }
 
 func (se *session) Data(r io.Reader) error {
+	// Bound how many messages are processed at once; see maxConcurrentData.
+	se.srv.dataSem <- struct{}{}
+	defer func() { <-se.srv.dataSem }()
 	// One bad message must not kill the connection handler.
 	defer func() {
 		if p := recover(); p != nil {
@@ -96,7 +114,7 @@ func (se *session) Data(r io.Reader) error {
 		slog.Warn("inbound: dropping unparsable report message", "err", err)
 		return nil
 	}
-	rep, err := dmarcreport.Parse(strings.NewReader(string(xmlBytes)))
+	rep, err := dmarcreport.Parse(bytes.NewReader(xmlBytes))
 	if err != nil {
 		slog.Warn("inbound: dropping malformed report xml", "err", err)
 		return nil
@@ -106,6 +124,7 @@ func (se *session) Data(r io.Reader) error {
 		RangeBegin: store.FmtTime(rep.RangeBegin), RangeEnd: store.FmtTime(rep.RangeEnd),
 		ReceivedAt: store.Now(), Raw: string(xmlBytes),
 	}
+	egressIP := net.ParseIP(se.srv.EgressIP)
 	var recs []store.DMARCRecord
 	ownFailures := 0
 	for _, r := range rep.Records {
@@ -115,7 +134,12 @@ func (se *session) Data(r io.Reader) error {
 		})
 		// Both evaluations failing from our own IP is the "our signing or
 		// DNS broke" signal; spoofing from other IPs stays page-only.
-		if r.SourceIP == se.srv.EgressIP && r.DKIM == "fail" && r.SPF == "fail" {
+		// Parse+Equal (not a bare string compare) so e.g. an IPv4-mapped
+		// IPv6 form (::ffff:203.0.113.7) still matches; ParseIP returns nil
+		// on garbage input, and nil.Equal is always false, so an unparsable
+		// source_ip just never matches rather than panicking.
+		sourceIP := net.ParseIP(r.SourceIP)
+		if egressIP != nil && sourceIP != nil && egressIP.Equal(sourceIP) && r.DKIM == "fail" && r.SPF == "fail" {
 			ownFailures += r.Count
 		}
 	}
@@ -132,7 +156,22 @@ func (se *session) Data(r io.Reader) error {
 	}
 	slog.Info("inbound: stored dmarc report", "org", rep.Org, "domain", rep.Domain, "records", len(recs))
 	if ownFailures > 0 && se.srv.OnOwnFailure != nil {
-		se.srv.OnOwnFailure(rep.Domain, ownFailures)
+		// Reports are attacker-supplied: anyone can send a report whose
+		// policy_published names any domain and whose row claims our own
+		// EgressIP failed. EgressIP itself is public (it's in every domain's
+		// published SPF record), so without this gate an attacker can mint
+		// an endless stream of unique forged domains — each one dodging
+		// notify's per-domain cooldown — and flood the admin mailbox
+		// indefinitely. Only a domain that is both known to us and fully
+		// verified can actually be sending through doevoe, so a genuine
+		// own-failure can only ever concern one of those; anything else is
+		// forged and must not alert (the report itself is still stored).
+		d, err := se.srv.Store.GetDomainByName(rep.Domain)
+		if err != nil {
+			slog.Error("inbound: domain lookup failed, skipping own-failure alert", "domain", rep.Domain, "err", err)
+		} else if d != nil && d.Verified() {
+			se.srv.OnOwnFailure(rep.Domain, ownFailures)
+		}
 	}
 	return nil
 }

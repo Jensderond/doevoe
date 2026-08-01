@@ -6,24 +6,6 @@ import (
 	"time"
 )
 
-const validFullDocument = `<feedback>
-  <report_metadata>
-    <org_name>test.org</org_name>
-    <report_id>test-id-123</report_id>
-    <date_range><begin>1753999200</begin><end>1754085600</end></date_range>
-  </report_metadata>
-  <policy_published>
-    <domain>example.com</domain>
-  </policy_published>
-  <record>
-    <row>
-      <source_ip>192.0.2.1</source_ip>
-      <count>5</count>
-      <policy_evaluated><dkim>pass</dkim><spf>pass</spf></policy_evaluated>
-    </row>
-  </record>
-</feedback>`
-
 const googleShaped = `<?xml version="1.0" encoding="UTF-8" ?>
 <feedback>
   <report_metadata>
@@ -102,11 +84,12 @@ func TestParseMissingOptionalFields(t *testing.T) {
 
 func TestParseRejectsInvalid(t *testing.T) {
 	cases := map[string]string{
-		"not xml":       "this is not xml at all {",
-		"no org":        `<feedback><report_metadata><report_id>r</report_id></report_metadata><policy_published><domain>d</domain></policy_published><record><row><source_ip>1.2.3.4</source_ip><count>1</count></row></record></feedback>`,
-		"no report id":  `<feedback><report_metadata><org_name>o</org_name></report_metadata><policy_published><domain>d</domain></policy_published><record><row><source_ip>1.2.3.4</source_ip><count>1</count></row></record></feedback>`,
-		"no domain":     `<feedback><report_metadata><org_name>o</org_name><report_id>r</report_id></report_metadata><record><row><source_ip>1.2.3.4</source_ip><count>1</count></row></record></feedback>`,
-		"zero records":  `<feedback><report_metadata><org_name>o</org_name><report_id>r</report_id></report_metadata><policy_published><domain>d</domain></policy_published></feedback>`,
+		"not xml":        "this is not xml at all {",
+		"no org":         `<feedback><report_metadata><report_id>r</report_id></report_metadata><policy_published><domain>d</domain></policy_published><record><row><source_ip>1.2.3.4</source_ip><count>1</count></row></record></feedback>`,
+		"no report id":   `<feedback><report_metadata><org_name>o</org_name></report_metadata><policy_published><domain>d</domain></policy_published><record><row><source_ip>1.2.3.4</source_ip><count>1</count></row></record></feedback>`,
+		"no domain":      `<feedback><report_metadata><org_name>o</org_name><report_id>r</report_id></report_metadata><record><row><source_ip>1.2.3.4</source_ip><count>1</count></row></record></feedback>`,
+		"zero records":   `<feedback><report_metadata><org_name>o</org_name><report_id>r</report_id></report_metadata><policy_published><domain>d</domain></policy_published></feedback>`,
+		"negative count": `<feedback><report_metadata><org_name>o</org_name><report_id>r</report_id></report_metadata><policy_published><domain>d</domain></policy_published><record><row><source_ip>1.2.3.4</source_ip><count>-1</count></row></record></feedback>`,
 	}
 	for name, xml := range cases {
 		if _, err := Parse(strings.NewReader(xml)); err == nil {
@@ -136,7 +119,7 @@ func TestParseWrongRoot(t *testing.T) {
 </not_feedback>`
 	_, err := Parse(strings.NewReader(wrongRoot))
 	if err == nil {
-		t.Errorf("wrong root: expected error, got nil")
+		t.Fatalf("wrong root: expected error, got nil")
 	}
 	if !strings.Contains(err.Error(), "expected element type") {
 		t.Errorf("wrong root: expected 'expected element type' in error, got %v", err)

@@ -20,8 +20,8 @@ type Report struct {
 
 // Record is one <record> row: what one source IP did during the range.
 type Record struct {
-	SourceIP                          string
-	Count                             int
+	SourceIP                           string
+	Count                              int
 	Disposition, DKIM, SPF, HeaderFrom string
 }
 
@@ -78,6 +78,11 @@ func Parse(r io.Reader) (*Report, error) {
 	}
 	if len(f.Records) == 0 {
 		return nil, fmt.Errorf("dmarc xml: no records")
+	}
+	for _, rec := range f.Records {
+		if rec.Row.Count < 0 {
+			return nil, fmt.Errorf("dmarc xml: negative count")
+		}
 	}
 	rep := &Report{
 		Org: f.ReportMetadata.OrgName, Email: f.ReportMetadata.Email,

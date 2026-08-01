@@ -15,10 +15,11 @@ import (
 	"strings"
 )
 
-// MaxXMLBytes caps the decompressed report size. Aggregate reports are
-// typically well under 1 MB; the cap exists so a hostile gzip/zip bomb
-// cannot balloon a 15 MB message into gigabytes of memory.
-const MaxXMLBytes = 50 << 20
+// MaxXMLBytes caps the decompressed report size. Real aggregate reports are
+// well under 1 MB; 5 MB is generous headroom, and the cap exists so a
+// hostile gzip/zip bomb cannot balloon a 15 MB message into gigabytes of
+// memory.
+const MaxXMLBytes = 5 << 20
 
 // FromEmail reads a full RFC 822 report email and returns the decompressed
 // aggregate-report XML from its first gzip/zip/xml payload. Reporters differ
