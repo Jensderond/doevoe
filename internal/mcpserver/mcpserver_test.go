@@ -114,6 +114,43 @@ func TestGetEmailStatusNotFound(t *testing.T) {
 	callToolErr(t, cs, "get_email_status", map[string]any{"id": 999})
 }
 
+func TestSendEmail(t *testing.T) {
+	_, st, cs := setup(t)
+	d, _ := st.CreateDomain("example.com", "mail1", "PEM")
+	st.SetDomainVerification(d.ID, true, true, true, store.Now())
+	out := callTool(t, cs, "send_email", map[string]any{
+		"from": "Sender <hi@example.com>", "to": "you@other.com",
+		"subject": "hello", "text": "body",
+	})
+	if out["status"] != "queued" {
+		t.Fatalf("got %v", out)
+	}
+	e, err := st.GetEmail(int64(out["id"].(float64)))
+	if err != nil || e.FromName != "Sender" || e.APIKeyID != 0 {
+		t.Fatalf("stored email %+v err=%v", e, err)
+	}
+}
+
+func TestSendEmailUnknownDomain(t *testing.T) {
+	_, _, cs := setup(t)
+	msg := callToolErr(t, cs, "send_email", map[string]any{
+		"from": "hi@nowhere.com", "to": "you@other.com",
+		"subject": "hello", "text": "body",
+	})
+	if msg == "" {
+		t.Fatal("expected error text")
+	}
+}
+
+func TestSendEmailUnverifiedDomainFailsClosed(t *testing.T) {
+	_, st, cs := setup(t)
+	st.CreateDomain("example.com", "mail1", "PEM") // not verified
+	callToolErr(t, cs, "send_email", map[string]any{
+		"from": "hi@example.com", "to": "you@other.com",
+		"subject": "hello", "text": "body",
+	})
+}
+
 func TestGetSendingStats(t *testing.T) {
 	_, st, cs := setup(t)
 	d, _ := st.CreateDomain("example.com", "mail1", "PEM")
