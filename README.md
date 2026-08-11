@@ -125,6 +125,19 @@ The JSON body accepts:
 
 At least one of `text` or `html` is required.
 
+## MCP server
+
+Set `DOEVOE_MCP_TOKEN` and doevoe serves a [Model Context Protocol](https://modelcontextprotocol.io)
+endpoint at `POST /mcp` (Streamable HTTP transport via the official Go SDK —
+protocol revisions 2024-11-05 through 2026-07-28 negotiated per connection).
+Authentication is `Authorization: Bearer $DOEVOE_MCP_TOKEN`; the token is
+admin-scoped, unlike domain-scoped API keys, so treat it like the admin
+password. Unset means the endpoint is not mounted at all.
+
+Tools: `send_email`, `get_email_status`, `create_domain` (returns the DNS
+records to add), `verify_domain`, `create_api_key` (returns the token once),
+`revoke_api_key`, `get_sending_stats`.
+
 ## Configuration
 
 All configuration is environment variables, read once at startup
@@ -145,6 +158,7 @@ exits immediately with an error.
 | `DOEVOE_FAILURE_RATE_MIN_VOLUME` | no | `10` | Minimum delivery attempts in the trailing hour before the failure-rate alert can fire for a domain |
 | `DOEVOE_FAILURE_RATE_THRESHOLD` | no | `0.2` | Failure ratio (0–1) over the trailing hour that triggers the failure-rate alert |
 | `DOEVOE_INBOUND_LISTEN` | no | `:25` | SMTP listen address for the built-in DMARC aggregate-report receiver; set to an empty value to disable it entirely |
+| `DOEVOE_MCP_TOKEN` | no | — (disabled) | Bearer token for the MCP server at `/mcp`; unset disables the endpoint entirely. Admin-level credential: MCP tools can create domains and API keys and send from any verified domain |
 
 ## Delivery and retries
 

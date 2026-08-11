@@ -241,49 +241,6 @@ func TestIdempotencyIndexRejectsDuplicate(t *testing.T) {
 	}
 }
 
-// TestEnqueueOrReplayRecoversFromIndexRace covers the handler-recovery half
-// of Finding 2. Deterministically driving the actual concurrent race
-// through the HTTP handler isn't reproducible without flakiness (the whole
-// point is that both requests pass the pre-check before either inserts), so
-// this instead unit-tests the extracted enqueueOrReplay helper directly:
-// it pre-creates a row with idempotency key K (standing in for the
-// racing request that won), then calls enqueueOrReplay with a second,
-// distinct Email that reuses the same (api_key_id, idempotency_key) pair
-// (standing in for the request that lost the race and whose EnqueueEmail
-// call fails against idx_emails_idem). The helper must recover by finding
-// the winning row and returning it as a replay, not surface the raw insert
-// error as a 500.
-func TestEnqueueOrReplayRecoversFromIndexRace(t *testing.T) {
-	f := setup(t, true)
-	k, err := f.store.GetAPIKeyByHash(store.HashAPIKey(f.token))
-	if err != nil || k == nil {
-		t.Fatalf("lookup api key: %v", err)
-	}
-
-	winner := &store.Email{APIKeyID: k.ID, DomainID: f.domain.ID, From: "info@example.com", To: "u@dest.test",
-		Subject: "s", BodyText: "t", IdempotencyKey: "race-key"}
-	winnerID, err := f.store.EnqueueEmail(winner)
-	if err != nil {
-		t.Fatalf("seed winning insert: %v", err)
-	}
-
-	loser := &store.Email{APIKeyID: k.ID, DomainID: f.domain.ID, From: "info@example.com", To: "other@dest.test",
-		Subject: "s2", BodyText: "t2", IdempotencyKey: "race-key"}
-	id, status, replay, err := enqueueOrReplay(f.store, loser)
-	if err != nil {
-		t.Fatalf("enqueueOrReplay: %v", err)
-	}
-	if !replay {
-		t.Fatal("want replay=true when the insert loses the index race")
-	}
-	if id != winnerID {
-		t.Fatalf("id = %d, want winning row's id %d", id, winnerID)
-	}
-	if status != "queued" {
-		t.Fatalf("status = %q, want queued", status)
-	}
-}
-
 // TestPostIngressValidation covers Finding 3: reply_to and custom headers
 // must be validated at ingress (422) rather than only at send time, where a
 // rejected email would already be stuck in the queue unable to ever send.

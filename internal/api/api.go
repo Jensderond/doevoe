@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/mail"
 	"strconv"
 	"strings"
 
-	"doevoe/internal/delivery"
+	"doevoe/internal/send"
 	"doevoe/internal/store"
 )
 
@@ -75,114 +74,20 @@ func (s *Server) postEmail(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 400, "invalid json: "+err.Error())
 		return
 	}
-	from, err := mail.ParseAddress(req.From)
-	if err != nil {
-		jsonError(w, 422, "invalid from address")
-		return
-	}
-	to, err := mail.ParseAddress(req.To)
-	if err != nil {
-		jsonError(w, 422, "invalid to address")
-		return
-	}
-	if req.Subject == "" || (req.HTML == "" && req.Text == "") {
-		jsonError(w, 422, "subject and html or text are required")
-		return
-	}
-	// Validate ingress input that the delivery layer would otherwise only catch
-	// at send time (see delivery.BuildMessage), which would leave a queued email
-	// that can never send. Reject it immediately instead.
-	if err := delivery.ValidateHeaderValue("Subject", req.Subject); err != nil {
-		jsonError(w, 422, "invalid subject: "+err.Error())
-		return
-	}
-	if req.ReplyTo != "" {
-		if _, err := mail.ParseAddress(req.ReplyTo); err != nil {
-			jsonError(w, 422, "invalid reply_to address")
-			return
-		}
-	}
-	if err := delivery.ValidateHeaderValue("From", delivery.FormatAddress(from.Name, from.Address)); err != nil {
-		jsonError(w, 422, "invalid from: "+err.Error())
-		return
-	}
-	if err := delivery.ValidateHeaderValue("To", delivery.FormatAddress(to.Name, to.Address)); err != nil {
-		jsonError(w, 422, "invalid to: "+err.Error())
-		return
-	}
-	for name, value := range req.Headers {
-		if err := delivery.ValidateHeader(name, value); err != nil {
-			jsonError(w, 422, "invalid header: "+err.Error())
-			return
-		}
-	}
-	domain, err := s.Store.GetDomain(k.DomainID)
-	if err != nil {
-		jsonError(w, 500, "internal error")
-		return
-	}
-	fromDomain := from.Address[strings.LastIndex(from.Address, "@")+1:]
-	if !strings.EqualFold(fromDomain, domain.Name) {
-		jsonError(w, 422, "from address must be on domain "+domain.Name)
-		return
-	}
-	if !domain.Verified() {
-		jsonError(w, 403, "domain "+domain.Name+" is not verified; complete DNS setup in the doevoe admin before sending")
-		return
-	}
-
-	idemKey := r.Header.Get("Idempotency-Key")
-	if idemKey != "" {
-		if existing, err := s.Store.FindByIdempotencyKey(k.ID, idemKey); err == nil && existing != nil {
-			writeJSON(w, 200, map[string]any{"id": existing.ID, "status": existing.Status})
-			return
-		}
-	}
-
-	headersJSON := "{}"
-	if len(req.Headers) > 0 {
-		hb, _ := json.Marshal(req.Headers)
-		headersJSON = string(hb)
-	}
-	id, status, replay, err := enqueueOrReplay(s.Store, &store.Email{
-		APIKeyID: k.ID, DomainID: domain.ID,
-		From: from.Address, To: to.Address, FromName: from.Name, ToName: to.Name, ReplyTo: req.ReplyTo,
-		Subject: req.Subject, BodyHTML: req.HTML, BodyText: req.Text,
-		HeadersJSON: headersJSON, IdempotencyKey: idemKey,
+	res, serr := send.Send(s.Store, k.ID, k.DomainID, send.Input{
+		From: req.From, To: req.To, Subject: req.Subject, HTML: req.HTML, Text: req.Text,
+		ReplyTo: req.ReplyTo, Headers: req.Headers,
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
 	})
-	if err != nil {
-		jsonError(w, 500, "enqueue failed")
+	if serr != nil {
+		jsonError(w, serr.Code, serr.Msg)
 		return
 	}
-	if replay {
-		writeJSON(w, 200, map[string]any{"id": id, "status": status})
-		return
+	code := 202
+	if res.Replay {
+		code = 200
 	}
-	writeJSON(w, 202, map[string]any{"id": id, "status": status})
-}
-
-// enqueueOrReplay inserts e via store.EnqueueEmail. A caller-supplied
-// Idempotency-Key is already checked once by postEmail before this is
-// called (FindByIdempotencyKey), but that check-then-insert is not atomic:
-// a racing duplicate request can insert the same (api_key_id,
-// idempotency_key) pair in between, and the partial unique index
-// idx_emails_idem then causes this insert to fail. Rather than surface that
-// as a bare 500 for what is really a successful, idempotent replay, this
-// re-checks FindByIdempotencyKey on insert failure and, if a matching row
-// now exists, returns it as a replay (200) instead of an error. If no
-// matching row is found, or no idempotency key was supplied, the original
-// insert error is returned unchanged.
-func enqueueOrReplay(st *store.Store, e *store.Email) (id int64, status string, replay bool, err error) {
-	id, err = st.EnqueueEmail(e)
-	if err == nil {
-		return id, "queued", false, nil
-	}
-	if e.IdempotencyKey != "" {
-		if existing, ferr := st.FindByIdempotencyKey(e.APIKeyID, e.IdempotencyKey); ferr == nil && existing != nil {
-			return existing.ID, existing.Status, true, nil
-		}
-	}
-	return 0, "", false, err
+	writeJSON(w, code, map[string]any{"id": res.ID, "status": res.Status})
 }
 
 func (s *Server) getEmail(w http.ResponseWriter, r *http.Request) {

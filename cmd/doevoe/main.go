@@ -24,7 +24,9 @@ import (
 	"doevoe/internal/dkimkeys"
 	"doevoe/internal/dnsbl"
 	"doevoe/internal/dnscheck"
+	"doevoe/internal/domains"
 	"doevoe/internal/inbound"
+	"doevoe/internal/mcpserver"
 	"doevoe/internal/notify"
 	"doevoe/internal/store"
 )
@@ -81,6 +83,16 @@ func main() {
 	mux := http.NewServeMux()
 	(&api.Server{Store: s}).Routes(mux)
 	adm.Routes(mux)
+	if cfg.MCPToken != "" {
+		m := &mcpserver.Server{
+			Store: s, CheckDomain: checkDomain,
+			EgressIP: cfg.EgressIP, DMARCRua: reportAddr,
+			SystemDomain: systemDomain, Hostname: cfg.Hostname,
+			OnKeyCreated: notifier.KeyCreated, OnKeyRevoked: notifier.KeyRevoked,
+		}
+		mux.Handle("/mcp", mcpserver.Handler(m, cfg.MCPToken))
+		slog.Info("mcp endpoint enabled", "path", "/mcp")
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusSeeOther)
@@ -179,21 +191,16 @@ func recheckDNSLoop(ctx context.Context, s *store.Store, check func(context.Cont
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			domains, err := s.ListDomains()
+			domainList, err := s.ListDomains()
 			if err != nil {
 				continue
 			}
-			for _, d := range domains {
-				res := check(ctx, d)
-				if res.Indeterminate {
-					// Transient resolver failure (or an unparsable DKIM key):
-					// not a genuine re-check result, so don't let it flip an
-					// already-verified domain to unverified and fail-close
-					// its sends with 403 on a mere blip.
-					slog.Warn("dns recheck indeterminate; not persisting", "domain", d.Name)
-					continue
-				}
-				s.SetDomainVerification(d.ID, res.SPF.OK, res.DKIM.OK, res.DMARC.OK, store.Now())
+			for _, d := range domainList {
+				// domains.Verify owns the indeterminate-result guard: a
+				// transient resolver failure (or an unparsable DKIM key)
+				// is never persisted, so it can't flip an already-verified
+				// domain to unverified on a mere blip.
+				domains.Verify(ctx, s, check, d)
 			}
 		}
 	}
