@@ -37,6 +37,7 @@ func (s *Server) MCP() *mcp.Server {
 	}, nil)
 	s.addEmailTools(srv)
 	s.addDomainTools(srv)
+	s.addKeyTools(srv)
 	s.addStatsTool(srv)
 	return srv
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -201,6 +202,45 @@ func TestVerifyDomainIndeterminateNotPersisted(t *testing.T) {
 	if !d.Verified() {
 		t.Fatal("indeterminate result flipped a verified domain")
 	}
+}
+
+func TestCreateAndRevokeAPIKey(t *testing.T) {
+	srv, st, cs := setup(t)
+	var created, revoked bool
+	srv.OnKeyCreated = func(name, domainName string) { created = true }
+	srv.OnKeyRevoked = func(name, domainName string) { revoked = true }
+	st.CreateDomain("example.com", "mail1", "PEM")
+
+	out := callTool(t, cs, "create_api_key", map[string]any{"name": "ci", "domain": "example.com"})
+	token, _ := out["token"].(string)
+	if !strings.HasPrefix(token, "dv_") {
+		t.Fatalf("bad token %q", token)
+	}
+	if !created {
+		t.Fatal("OnKeyCreated not fired")
+	}
+	if k, _ := st.GetAPIKeyByHash(store.HashAPIKey(token)); k == nil {
+		t.Fatal("token does not authenticate")
+	}
+
+	id := int64(out["id"].(float64))
+	callTool(t, cs, "revoke_api_key", map[string]any{"id": id})
+	if !revoked {
+		t.Fatal("OnKeyRevoked not fired")
+	}
+	if k, _ := st.GetAPIKeyByHash(store.HashAPIKey(token)); k != nil {
+		t.Fatal("revoked token still authenticates")
+	}
+}
+
+func TestCreateAPIKeyUnknownDomain(t *testing.T) {
+	_, _, cs := setup(t)
+	callToolErr(t, cs, "create_api_key", map[string]any{"name": "ci", "domain": "nowhere.com"})
+}
+
+func TestRevokeAPIKeyUnknownID(t *testing.T) {
+	_, _, cs := setup(t)
+	callToolErr(t, cs, "revoke_api_key", map[string]any{"id": 424242})
 }
 
 func TestGetSendingStats(t *testing.T) {

@@ -36,6 +36,23 @@ func (s *Store) GetAPIKeyByHash(hash string) (*APIKey, error) {
 	return k, err
 }
 
+// GetAPIKey returns the key with the given id, or nil if it doesn't exist.
+// Unlike GetAPIKeyByHash it does not filter on revoked: callers managing
+// keys need to see revoked rows too.
+func (s *Store) GetAPIKey(id int64) (*APIKey, error) {
+	k := &APIKey{}
+	err := s.db.QueryRow(`SELECT id, name, key_hash, domain_id, revoked, last_used_at, created_at
+		FROM api_keys WHERE id=?`, id).
+		Scan(&k.ID, &k.Name, &k.KeyHash, &k.DomainID, &k.Revoked, &k.LastUsedAt, &k.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
 func (s *Store) ListAPIKeys() ([]*APIKey, error) {
 	rows, err := s.db.Query(`SELECT id, name, key_hash, domain_id, revoked, last_used_at, created_at FROM api_keys ORDER BY created_at DESC`)
 	if err != nil {
