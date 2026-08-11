@@ -24,6 +24,7 @@ import (
 	"doevoe/internal/dkimkeys"
 	"doevoe/internal/dnsbl"
 	"doevoe/internal/dnscheck"
+	"doevoe/internal/domains"
 	"doevoe/internal/inbound"
 	"doevoe/internal/notify"
 	"doevoe/internal/store"
@@ -179,21 +180,16 @@ func recheckDNSLoop(ctx context.Context, s *store.Store, check func(context.Cont
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			domains, err := s.ListDomains()
+			domainList, err := s.ListDomains()
 			if err != nil {
 				continue
 			}
-			for _, d := range domains {
-				res := check(ctx, d)
-				if res.Indeterminate {
-					// Transient resolver failure (or an unparsable DKIM key):
-					// not a genuine re-check result, so don't let it flip an
-					// already-verified domain to unverified and fail-close
-					// its sends with 403 on a mere blip.
-					slog.Warn("dns recheck indeterminate; not persisting", "domain", d.Name)
-					continue
-				}
-				s.SetDomainVerification(d.ID, res.SPF.OK, res.DKIM.OK, res.DMARC.OK, store.Now())
+			for _, d := range domainList {
+				// domains.Verify owns the indeterminate-result guard: a
+				// transient resolver failure (or an unparsable DKIM key)
+				// is never persisted, so it can't flip an already-verified
+				// domain to unverified on a mere blip.
+				domains.Verify(ctx, s, check, d)
 			}
 		}
 	}

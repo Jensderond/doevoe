@@ -24,6 +24,7 @@ import (
 	"doevoe/internal/delivery"
 	"doevoe/internal/dkimkeys"
 	"doevoe/internal/dnscheck"
+	"doevoe/internal/domains"
 	"doevoe/internal/store"
 )
 
@@ -644,17 +645,11 @@ func (a *Admin) listDomains(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Admin) createDomain(w http.ResponseWriter, r *http.Request) {
-	name := strings.ToLower(strings.TrimSpace(r.FormValue("name")))
-	if name == "" || strings.ContainsAny(name, " /@") {
+	d, err := domains.Create(a.Store, r.FormValue("name"))
+	if errors.Is(err, domains.ErrInvalidName) {
 		http.Error(w, "invalid domain name", 422)
 		return
 	}
-	priv, _, err := dkimkeys.Generate()
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	d, err := a.Store.CreateDomain(name, "mail1", priv)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -692,16 +687,10 @@ func (a *Admin) verifyDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "verification not configured", http.StatusInternalServerError)
 		return
 	}
-	res := a.CheckDomain(r.Context(), d)
-	if res.Indeterminate {
-		// A transient resolver failure, not a genuine "record missing"
-		// answer: persisting this would flip an already-verified domain to
-		// unverified (and fail-close its sends with 403) on a mere DNS
-		// blip. Skip the write and just redirect back unchanged.
-		slog.Warn("dns verification indeterminate; not persisting", "domain", d.Name)
-	} else {
-		a.Store.SetDomainVerification(d.ID, res.SPF.OK, res.DKIM.OK, res.DMARC.OK, store.Now())
-	}
+	// domains.Verify owns the indeterminate-result guard (never persist a
+	// transient resolver failure); the admin page redirects back regardless
+	// of outcome, matching prior behavior.
+	domains.Verify(r.Context(), a.Store, a.CheckDomain, d)
 	http.Redirect(w, r, fmt.Sprintf("/admin/domains/%d", d.ID), http.StatusSeeOther)
 }
 
