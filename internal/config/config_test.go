@@ -49,6 +49,25 @@ func TestLoadInboundListen(t *testing.T) {
 	}
 }
 
+func TestMCPTokenOptional(t *testing.T) {
+	setRequired(t)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MCPToken != "" {
+		t.Fatalf("want empty default, got %q", c.MCPToken)
+	}
+	t.Setenv("DOEVOE_MCP_TOKEN", "sekrit")
+	c, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MCPToken != "sekrit" {
+		t.Fatalf("got %q", c.MCPToken)
+	}
+}
+
 func TestLoadMissingRequired(t *testing.T) {
 	setRequired(t)
 	t.Setenv("DOEVOE_HOSTNAME", "")

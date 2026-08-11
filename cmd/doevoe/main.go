@@ -26,6 +26,7 @@ import (
 	"doevoe/internal/dnscheck"
 	"doevoe/internal/domains"
 	"doevoe/internal/inbound"
+	"doevoe/internal/mcpserver"
 	"doevoe/internal/notify"
 	"doevoe/internal/store"
 )
@@ -82,6 +83,16 @@ func main() {
 	mux := http.NewServeMux()
 	(&api.Server{Store: s}).Routes(mux)
 	adm.Routes(mux)
+	if cfg.MCPToken != "" {
+		m := &mcpserver.Server{
+			Store: s, CheckDomain: checkDomain,
+			EgressIP: cfg.EgressIP, DMARCRua: reportAddr,
+			SystemDomain: systemDomain, Hostname: cfg.Hostname,
+			OnKeyCreated: notifier.KeyCreated, OnKeyRevoked: notifier.KeyRevoked,
+		}
+		mux.Handle("/mcp", mcpserver.Handler(m, cfg.MCPToken))
+		slog.Info("mcp endpoint enabled", "path", "/mcp")
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusSeeOther)

@@ -13,6 +13,10 @@ type Config struct {
 	SystemFrom, EgressIP           string
 	PublicURL                      string
 	InboundListen                  string
+	// MCPToken is the bearer token for the MCP endpoint at /mcp. Optional
+	// and deliberately not in the required-vars set: unset means the MCP
+	// endpoint is never mounted (fail-closed).
+	MCPToken string
 	SMTPPort, FailureRateMinVolume int
 	FailureRateThreshold           float64
 }
@@ -27,6 +31,7 @@ func Load() (*Config, error) {
 		SystemFrom:    os.Getenv("DOEVOE_SYSTEM_FROM"),
 		EgressIP:      os.Getenv("DOEVOE_EGRESS_IP"),
 		PublicURL:     strings.TrimRight(os.Getenv("DOEVOE_PUBLIC_URL"), "/"),
+		MCPToken:      os.Getenv("DOEVOE_MCP_TOKEN"),
 	}
 	for name, v := range map[string]string{
 		"DOEVOE_HOSTNAME": c.Hostname, "DOEVOE_ADMIN_PASSWORD": c.AdminPassword,
