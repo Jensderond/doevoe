@@ -151,6 +151,58 @@ func TestSendEmailUnverifiedDomainFailsClosed(t *testing.T) {
 	})
 }
 
+func TestCreateDomainReturnsDNSRecords(t *testing.T) {
+	_, st, cs := setup(t)
+	out := callTool(t, cs, "create_domain", map[string]any{"name": "Example.com"})
+	if out["name"] != "example.com" {
+		t.Fatalf("got %v", out)
+	}
+	recs, ok := out["dns_records"].([]any)
+	if !ok || len(recs) == 0 {
+		t.Fatalf("no dns_records in %v", out)
+	}
+	if d, _ := st.GetDomainByName("example.com"); d == nil {
+		t.Fatal("domain not stored")
+	}
+}
+
+func TestCreateDomainDuplicate(t *testing.T) {
+	_, st, cs := setup(t)
+	st.CreateDomain("example.com", "mail1", "PEM")
+	callToolErr(t, cs, "create_domain", map[string]any{"name": "example.com"})
+}
+
+func TestVerifyDomainPersists(t *testing.T) {
+	_, st, cs := setup(t)
+	callTool(t, cs, "create_domain", map[string]any{"name": "example.com"})
+	out := callTool(t, cs, "verify_domain", map[string]any{"name": "example.com"})
+	if out["verified"] != true || out["persisted"] != true {
+		t.Fatalf("got %v", out)
+	}
+	d, _ := st.GetDomainByName("example.com")
+	if !d.Verified() {
+		t.Fatal("verification not persisted")
+	}
+}
+
+func TestVerifyDomainIndeterminateNotPersisted(t *testing.T) {
+	srv, st, cs := setup(t)
+	callTool(t, cs, "create_domain", map[string]any{"name": "example.com"})
+	d, _ := st.GetDomainByName("example.com")
+	st.SetDomainVerification(d.ID, true, true, true, store.Now())
+	srv.CheckDomain = func(context.Context, *store.Domain) dnscheck.Result {
+		return dnscheck.Result{Indeterminate: true}
+	}
+	out := callTool(t, cs, "verify_domain", map[string]any{"name": "example.com"})
+	if out["indeterminate"] != true || out["persisted"] != false {
+		t.Fatalf("got %v", out)
+	}
+	d, _ = st.GetDomainByName("example.com")
+	if !d.Verified() {
+		t.Fatal("indeterminate result flipped a verified domain")
+	}
+}
+
 func TestGetSendingStats(t *testing.T) {
 	_, st, cs := setup(t)
 	d, _ := st.CreateDomain("example.com", "mail1", "PEM")
