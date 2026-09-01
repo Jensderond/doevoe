@@ -121,9 +121,75 @@ The JSON body accepts:
 | `text` | text or html | Plain-text body. |
 | `html` | text or html | HTML body. Supply **both** `text` and `html` and doevoe builds a `multipart/alternative` message (the deliverability-preferred form); `html` alone sends `text/html`, `text` alone sends `text/plain`. |
 | `reply_to` | no | `Reply-To` header (display name also preserved). |
-| `headers` | no | Extra headers as a `{ "Name": "value" }` object. Headers doevoe sets itself (From, To, Subject, Date, Message-ID, MIME-Version, Content-Type, DKIM-Signature) are reserved and rejected. |
+| `headers` | no | Extra headers as a `{ "Name": "value" }` object. Headers doevoe sets itself (From, To, Subject, Date, Message-ID, MIME-Version, Content-Type, Content-Transfer-Encoding, Content-Disposition, Content-ID, DKIM-Signature) are reserved and rejected. |
+| `attachments` | no | Array of files to attach — see [Attachments](#attachments) below. |
 
 At least one of `text` or `html` is required.
+
+### Attachments
+
+`attachments` is an array; each entry carries its bytes base64-encoded in
+`content`:
+
+```bash
+curl -s https://your-proxy/api/v1/emails \
+  -H "Authorization: Bearer $DOEVOE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "hello@client.example",
+    "to": "someone@gmail.com",
+    "subject": "Your invoice",
+    "html": "<p>Invoice attached.</p><img src=\"cid:logo\">",
+    "attachments": [
+      { "filename": "invoice.pdf", "content": "'"$(base64 -w0 invoice.pdf)"'" },
+      { "filename": "logo.png", "content": "'"$(base64 -w0 logo.png)"'",
+        "disposition": "inline", "content_id": "logo" }
+    ]
+  }'
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `filename` | yes | Name the recipient sees. Must not contain `/`, `\`, CR, LF or NUL; max 255 bytes. Non-ASCII names are RFC 2231-encoded (`filename*=utf-8''…`) so they survive intact. |
+| `content` | yes | The file's bytes, base64-encoded. Line breaks in the base64 are fine, padding is optional. |
+| `content_type` | no | MIME type. Guessed from the filename extension when omitted, falling back to `application/octet-stream`. `multipart/*` is rejected (attach the parts individually); `message/rfc822` is fine, for attaching a forwarded email. |
+| `disposition` | no | `attachment` (default) or `inline`. |
+| `content_id` | no | Id an `inline` part is referenced by, **without** angle brackets: `"content_id": "logo"` is what `<img src="cid:logo">` in the HTML body resolves to. |
+
+**Inline images.** An `inline` attachment with a `content_id` goes into a
+`multipart/related` alongside the body, which is what makes a client render it
+in place instead of listing it as a download — the usual want for a logo or a
+chart in a transactional email. Plain `attachment` entries go into an outer
+`multipart/mixed`. Use both at once and the message nests
+`mixed > related > alternative`, which is the structure every mainstream client
+expects.
+
+**Limits.** These are the real per-message ceiling:
+
+| Limit | Value |
+|---|---|
+| Per attachment | 10 MB of file data |
+| All attachments in one message | 15 MB of file data |
+| Number of attachments | 20 |
+
+The numbers are actual file bytes, *not* the base64 length: 15 MB of files is
+~20.5 MB once base64-encoded into the message, which stays under the ~25 MB
+total-message limit most large mailbox providers enforce. Providers reject an
+oversized message with a permanent 5xx, so a message over their limit is a
+wasted send rather than something doevoe can retry — the caps are set to keep
+you below it. Exceeding a byte limit returns `413`; a malformed attachment
+(bad base64, illegal filename, unknown `disposition`) returns `422`, and
+nothing is queued either way.
+
+The request body itself is capped at 32 MB, sized to hold the base64 form of
+the above plus the bodies and headers; a body over that returns `413` before
+it is decoded.
+
+Attachment bytes are stored in the database next to the email and re-read on
+every delivery attempt, so a retry hours later (or an admin retry after fixing
+the recipient) still sends the same files. The admin email detail page lists
+what is attached — filename, type and size — but deliberately offers no
+download link.
 
 ## MCP server
 
@@ -134,8 +200,9 @@ Authentication is `Authorization: Bearer $DOEVOE_MCP_TOKEN`; the token is
 admin-scoped, unlike domain-scoped API keys, so treat it like the admin
 password. Unset means the endpoint is not mounted at all.
 
-Tools: `send_email`, `get_email_status`, `create_domain` (returns the DNS
-records to add), `verify_domain`, `create_api_key` (returns the token once),
+Tools: `send_email` (including `attachments`, same fields and limits as the
+JSON API), `get_email_status`, `create_domain` (returns the DNS records to
+add), `verify_domain`, `create_api_key` (returns the token once),
 `revoke_api_key`, `get_sending_stats`.
 
 ## Configuration

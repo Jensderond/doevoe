@@ -15,20 +15,45 @@ type Email struct {
 	NextAttemptAt, LastError, IdempotencyKey string
 	IsSystem                                 bool
 	CreatedAt, SentAt                        string
+	// AttachmentCount is the denormalized number of email_attachments rows,
+	// written once by EnqueueEmail. It is part of emailCols, so every read
+	// gets it for free — which is the point: callers can tell that an email
+	// has attachments (admin UI, and BuildMessage's not-loaded guard) without
+	// any query touching the BLOBs.
+	AttachmentCount int
+	// Attachments is NOT populated by scanEmail — it stays nil on every
+	// GetEmail/ListEmails/ClaimDue result, because loading multi-megabyte
+	// BLOBs into every listed row would be wasteful and, for the admin email
+	// list, pathological. The delivery worker fills it from ListAttachments
+	// just before handing the email to the sender (see worker.process), which
+	// is also what makes a retry hours later re-read the bytes from the DB.
+	// On the write path EnqueueEmail inserts whatever is here, in order, in
+	// the same transaction as the email row.
+	Attachments []Attachment
 }
 
 const emailCols = `id, COALESCE(api_key_id,0), domain_id, from_addr, to_addr, from_name, to_name, original_to, reply_to, subject,
- body_html, body_text, headers_json, status, attempts, next_attempt_at, last_error,
+ body_html, body_text, headers_json, attachment_count, status, attempts, next_attempt_at, last_error,
  COALESCE(idempotency_key,''), is_system, created_at, sent_at`
 
 func scanEmail(row interface{ Scan(...any) error }) (*Email, error) {
 	e := &Email{}
 	err := row.Scan(&e.ID, &e.APIKeyID, &e.DomainID, &e.From, &e.To, &e.FromName, &e.ToName, &e.OriginalTo, &e.ReplyTo, &e.Subject,
-		&e.BodyHTML, &e.BodyText, &e.HeadersJSON, &e.Status, &e.Attempts, &e.NextAttemptAt, &e.LastError,
+		&e.BodyHTML, &e.BodyText, &e.HeadersJSON, &e.AttachmentCount, &e.Status, &e.Attempts, &e.NextAttemptAt, &e.LastError,
 		&e.IdempotencyKey, &e.IsSystem, &e.CreatedAt, &e.SentAt)
 	return e, err
 }
 
+// EnqueueEmail inserts e and its e.Attachments as one transaction. The
+// transaction is what keeps the attachment rows from being visible late: the
+// worker's ClaimDue could otherwise pick up the email row between the two
+// inserts and send it with its attachments missing. Committing both together
+// means an email is never claimable in a half-attached state, and
+// attachment_count always matches the number of email_attachments rows.
+//
+// A duplicate (api_key_id, idempotency_key) still surfaces as an error from
+// the emails insert, exactly as before, so send.enqueueOrReplay's
+// replay-on-unique-violation fallback is unaffected.
 func (s *Store) EnqueueEmail(e *Email) (int64, error) {
 	if e.NextAttemptAt == "" {
 		e.NextAttemptAt = Now()
@@ -39,16 +64,47 @@ func (s *Store) EnqueueEmail(e *Email) (int64, error) {
 	if e.HeadersJSON == "" {
 		e.HeadersJSON = "{}"
 	}
-	res, err := s.db.Exec(`INSERT INTO emails
-		(api_key_id, domain_id, from_addr, to_addr, from_name, to_name, reply_to, subject, body_html, body_text, headers_json,
-		 status, next_attempt_at, idempotency_key, is_system, created_at)
-		VALUES (NULLIF(?,0),?,?,?,?,?,?,?,?,?,?, 'queued', ?, NULLIF(?,''), ?, ?)`,
-		e.APIKeyID, e.DomainID, e.From, e.To, e.FromName, e.ToName, e.ReplyTo, e.Subject, e.BodyHTML, e.BodyText, e.HeadersJSON,
-		e.NextAttemptAt, e.IdempotencyKey, e.IsSystem, e.CreatedAt)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	defer tx.Rollback() // no-op once Commit succeeds
+	res, err := tx.Exec(`INSERT INTO emails
+		(api_key_id, domain_id, from_addr, to_addr, from_name, to_name, reply_to, subject, body_html, body_text, headers_json,
+		 attachment_count, status, next_attempt_at, idempotency_key, is_system, created_at)
+		VALUES (NULLIF(?,0),?,?,?,?,?,?,?,?,?,?,?, 'queued', ?, NULLIF(?,''), ?, ?)`,
+		e.APIKeyID, e.DomainID, e.From, e.To, e.FromName, e.ToName, e.ReplyTo, e.Subject, e.BodyHTML, e.BodyText, e.HeadersJSON,
+		len(e.Attachments), e.NextAttemptAt, e.IdempotencyKey, e.IsSystem, e.CreatedAt)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	for _, a := range e.Attachments {
+		disposition := a.Disposition
+		if disposition == "" {
+			disposition = "attachment"
+		}
+		// A nil Content would bind as SQL NULL and trip the column's NOT NULL,
+		// but a zero-length attachment is a legal (if odd) MIME part that
+		// BuildMessage happily emits. Store it as what it is — zero bytes —
+		// rather than turning a harmless input into an enqueue error.
+		content := a.Content
+		if content == nil {
+			content = []byte{}
+		}
+		if _, err := tx.Exec(`INSERT INTO email_attachments (email_id, filename, content_type, disposition, content_id, content)
+			VALUES (?,?,?,?,?,?)`, id, a.Filename, a.ContentType, disposition, a.ContentID, content); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	e.AttachmentCount = len(e.Attachments)
+	return id, nil
 }
 
 func (s *Store) GetEmail(id int64) (*Email, error) {

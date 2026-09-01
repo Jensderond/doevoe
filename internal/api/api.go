@@ -14,9 +14,17 @@ import (
 // maxRequestBodyBytes caps the size of a POST /api/v1/emails body. Without
 // this, an unauthenticated-in-effect (or malicious authenticated) caller
 // could send an arbitrarily large body and exhaust memory/disk decoding and
-// storing it; 10MB comfortably covers any legitimate transactional email
-// (including a large embedded HTML body) while bounding the worst case.
-const maxRequestBodyBytes = 10 << 20 // 10MB
+// storing it.
+//
+// It is derived from the attachment limits rather than chosen: attachments
+// arrive base64-encoded in the JSON, so send.MaxTotalAttachmentBytes (15MB of
+// file data) is ~20.5MB on the wire, and JSON string escaping, the bodies and
+// the headers sit on top of that. 32MB leaves room for all of it while still
+// bounding the worst case; the attachment caps in internal/send, not this
+// number, are what a caller actually hits, and they are the limit the README
+// documents. Raise them together or a caller gets a body-too-large error
+// where an attachment-too-large error was meant.
+const maxRequestBodyBytes = 32 << 20 // 32MB
 
 type Server struct{ Store *store.Store }
 
@@ -49,13 +57,27 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) *store.APIKey {
 // to work by accident today because none of the others contain an
 // underscore in the wire format.
 type sendRequest struct {
-	From    string            `json:"from"`
-	To      string            `json:"to"`
-	Subject string            `json:"subject"`
-	HTML    string            `json:"html"`
-	Text    string            `json:"text"`
-	ReplyTo string            `json:"reply_to"`
-	Headers map[string]string `json:"headers"`
+	From        string            `json:"from"`
+	To          string            `json:"to"`
+	Subject     string            `json:"subject"`
+	HTML        string            `json:"html"`
+	Text        string            `json:"text"`
+	ReplyTo     string            `json:"reply_to"`
+	Headers     map[string]string `json:"headers"`
+	Attachments []attachmentReq   `json:"attachments"`
+}
+
+// attachmentReq is one entry of the request's "attachments" array. Content is
+// base64 — JSON has no byte type, and the alternative (a multipart/form-data
+// upload endpoint) would mean a second request shape for what is otherwise a
+// single atomic send. The same explicit-tag rule as sendRequest applies:
+// "content_type" and "content_id" would not decode without them.
+type attachmentReq struct {
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	Content     string `json:"content"`
+	Disposition string `json:"disposition"`
+	ContentID   string `json:"content_id"`
 }
 
 func (s *Server) postEmail(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +98,7 @@ func (s *Server) postEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	res, serr := send.Send(s.Store, k.ID, k.DomainID, send.Input{
 		From: req.From, To: req.To, Subject: req.Subject, HTML: req.HTML, Text: req.Text,
-		ReplyTo: req.ReplyTo, Headers: req.Headers,
+		ReplyTo: req.ReplyTo, Headers: req.Headers, Attachments: req.attachments(),
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
 	})
 	if serr != nil {
@@ -88,6 +110,24 @@ func (s *Server) postEmail(w http.ResponseWriter, r *http.Request) {
 		code = 200
 	}
 	writeJSON(w, code, map[string]any{"id": res.ID, "status": res.Status})
+}
+
+// attachments maps the request's attachment array onto send.Attachment. The
+// wire types are kept separate from send's so the JSON field names live in
+// exactly one place (these tags) and adding a field to either side is not
+// silently a public API change on the other.
+func (r sendRequest) attachments() []send.Attachment {
+	if len(r.Attachments) == 0 {
+		return nil
+	}
+	out := make([]send.Attachment, len(r.Attachments))
+	for i, a := range r.Attachments {
+		out[i] = send.Attachment{
+			Filename: a.Filename, ContentType: a.ContentType, ContentBase64: a.Content,
+			Disposition: a.Disposition, ContentID: a.ContentID,
+		}
+	}
+	return out
 }
 
 func (s *Server) getEmail(w http.ResponseWriter, r *http.Request) {

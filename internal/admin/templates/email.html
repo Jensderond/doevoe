@@ -19,6 +19,22 @@
   {{with .Email.BodyText}}<pre class="mono-block">{{.}}</pre>{{end}}
 </section>
 
+{{with .Attachments}}
+<h2 class="section-title">Attachments</h2>
+<div class="list">
+{{range .}}
+<div class="attempt">
+  <div class="row-meta">
+    <span>{{.Filename}}</span>
+    <span>{{.ContentType}}</span>
+    <span>{{.SizeText}}</span>
+    {{if eq .Disposition "inline"}}<span>inline{{with .ContentID}} &middot; cid:{{.}}{{end}}</span>{{end}}
+  </div>
+</div>
+{{end}}
+</div>
+{{end}}
+
 {{if .CanRetry}}
 <h2 class="section-title">Retry</h2>
 <p class="lede">Edit the recipient to fix a typo or a wrong domain; retrying starts the backoff schedule

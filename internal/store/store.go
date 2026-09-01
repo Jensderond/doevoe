@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS emails (
   body_html TEXT NOT NULL DEFAULT '',
   body_text TEXT NOT NULL DEFAULT '',
   headers_json TEXT NOT NULL DEFAULT '{}',
+  attachment_count INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'queued',
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TEXT NOT NULL,
@@ -59,6 +60,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_idem
 CREATE INDEX IF NOT EXISTS idx_emails_status_next ON emails(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_emails_domain_created ON emails(domain_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_emails_to ON emails(to_addr);
+-- email_attachments keeps attachment bytes out of the emails row: every list
+-- and claim query selects emailCols, so a BLOB column there would drag
+-- multi-megabyte payloads through the admin email list and every worker tick.
+-- The bytes are read only by the delivery worker, once per attempt, via
+-- ListAttachments. content is the raw (already base64-decoded) payload;
+-- delivery/message.go does the base64 encoding when it builds the MIME part,
+-- so a retry hours later re-reads the same bytes and re-encodes them.
+-- Rows are inserted in the same transaction as their email (see EnqueueEmail)
+-- and ordered by id, which preserves the order the caller supplied.
+CREATE TABLE IF NOT EXISTS email_attachments (
+  id INTEGER PRIMARY KEY,
+  email_id INTEGER NOT NULL REFERENCES emails(id),
+  filename TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  disposition TEXT NOT NULL DEFAULT 'attachment',
+  content_id TEXT NOT NULL DEFAULT '',
+  content BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_attachments_email ON email_attachments(email_id);
 CREATE TABLE IF NOT EXISTS delivery_attempts (
   id INTEGER PRIMARY KEY,
   email_id INTEGER NOT NULL REFERENCES emails(id),
@@ -148,6 +168,7 @@ func migrate(db *sql.DB) error {
 	stmts := []string{
 		`ALTER TABLE emails ADD COLUMN from_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE emails ADD COLUMN to_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE emails ADD COLUMN attachment_count INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {

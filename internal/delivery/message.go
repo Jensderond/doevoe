@@ -23,18 +23,29 @@ import (
 // colliding custom header could shadow or duplicate a header relied on for
 // routing (To/Bcc), authentication (DKIM-Signature), or MIME parsing
 // (Content-Type/MIME-Version).
+//
+// The three Content-* MIME part headers are reserved for the same MIME-parsing
+// reason as Content-Type, and became load-bearing once attachments existed: a
+// top-level "Content-Transfer-Encoding: base64" would tell the receiver to
+// base64-decode a multipart body that is not encoded, and a top-level
+// Content-Disposition or Content-ID would apply to the whole message rather
+// than the part the caller means. All three are only ever meaningful on the
+// parts BuildMessage writes itself, never as a caller-supplied message header.
 var reservedHeaders = map[string]bool{
-	"from":           true,
-	"to":             true,
-	"cc":             true,
-	"bcc":            true,
-	"reply-to":       true,
-	"subject":        true,
-	"date":           true,
-	"message-id":     true,
-	"mime-version":   true,
-	"content-type":   true,
-	"dkim-signature": true,
+	"from":                      true,
+	"to":                        true,
+	"cc":                        true,
+	"bcc":                       true,
+	"reply-to":                  true,
+	"subject":                   true,
+	"date":                      true,
+	"message-id":                true,
+	"mime-version":              true,
+	"content-type":              true,
+	"content-transfer-encoding": true,
+	"content-disposition":       true,
+	"content-id":                true,
+	"dkim-signature":            true,
 }
 
 // validateHeaderValue rejects raw CR/LF in a header value before it is
@@ -125,6 +136,23 @@ func BuildMessage(e *store.Email, hostname string, now time.Time) (string, error
 		}
 	}
 
+	// Attachment bytes live in their own table and are loaded separately from
+	// the email row (see store.Email.Attachments), so an email that has
+	// attachments can reach here with none loaded — a caller that forgot the
+	// ListAttachments step. Silently sending the message without its
+	// attachments would be the worst outcome: the recipient gets a mail that
+	// looks fine and is missing the invoice, and nothing anywhere records it.
+	// Fail instead, so the worker classifies it as a temporary error, records
+	// the attempt, and retries — by which time the bug is visible in
+	// last_error rather than invisible in a delivered email.
+	if e.AttachmentCount > 0 && len(e.Attachments) == 0 {
+		return "", fmt.Errorf("email %d has %d attachment(s) but none were loaded", e.ID, e.AttachmentCount)
+	}
+	root, err := buildBody(e)
+	if err != nil {
+		return "", err
+	}
+
 	var b strings.Builder
 	write := func(k, v string) { fmt.Fprintf(&b, "%s: %s\r\n", k, v) }
 
@@ -142,24 +170,15 @@ func BuildMessage(e *store.Email, hostname string, now time.Time) (string, error
 		write(k, custom[k])
 	}
 
-	switch {
-	case e.BodyText != "" && e.BodyHTML != "":
-		boundary := randHex(16)
-		write("Content-Type", fmt.Sprintf(`multipart/alternative; boundary=%q`, boundary))
-		b.WriteString("\r\n")
-		part := func(ct, body string) {
-			fmt.Fprintf(&b, "--%s\r\nContent-Type: %s; charset=utf-8\r\n\r\n%s\r\n", boundary, ct, crlf(body))
-		}
-		part("text/plain", e.BodyText)
-		part("text/html", e.BodyHTML)
-		fmt.Fprintf(&b, "--%s--\r\n", boundary)
-	case e.BodyHTML != "":
-		write("Content-Type", "text/html; charset=utf-8")
-		b.WriteString("\r\n" + crlf(e.BodyHTML) + "\r\n")
-	default:
-		write("Content-Type", "text/plain; charset=utf-8")
-		b.WriteString("\r\n" + crlf(e.BodyText) + "\r\n")
+	// The root part's Content-Type is a message header, so it is written here
+	// (and DKIM-signs with the rest of the header block); everything below it
+	// is body. See buildBody in attachments.go for the tree it describes.
+	write("Content-Type", root.contentType)
+	for _, h := range root.headers {
+		write(h[0], h[1])
 	}
+	b.WriteString("\r\n")
+	root.writeBody(&b)
 	return b.String(), nil
 }
 

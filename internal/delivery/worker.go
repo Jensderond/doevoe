@@ -126,6 +126,25 @@ func (w *Worker) process(ctx context.Context, e *store.Email, now time.Time) {
 		w.retryOrFail(e, now, err.Error())
 		return
 	}
+	// Attachment bytes are deliberately not part of the claimed row (they would
+	// ride along on every ClaimDue and every admin list query — see
+	// store.Email.Attachments); load them here, per attempt, right before the
+	// send. Reading them fresh each attempt is also what makes a retry hours
+	// later still have the data: nothing is held in memory between attempts,
+	// the rows outlive the process, and RequeueEmail leaves them attached. A
+	// load failure is treated like any other temporary error rather than
+	// sending a message with its attachments missing (BuildMessage refuses that
+	// too, from AttachmentCount).
+	if e.AttachmentCount > 0 {
+		atts, err := w.Store.ListAttachments(e.ID)
+		if err != nil {
+			slog.Error("load attachments", "email", e.ID, "err", err)
+			w.recordAttempt(e, 0, "", err.Error(), 0)
+			w.retryOrFail(e, now, err.Error())
+			return
+		}
+		e.Attachments = atts
+	}
 	res := w.Send(ctx, e, d)
 	w.recordAttempt(e, res.Code, res.MXHost, res.Response, res.Duration.Milliseconds())
 
