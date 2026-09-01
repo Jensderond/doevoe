@@ -38,7 +38,13 @@ struct fields, not interfaces/DI framework):
   `SQLITE_BUSY` entirely rather than adding retry logic. Timestamps are stored as RFC3339
   strings (`store.Now()` / `store.FmtTime()` / `store.ParseTime()`), not SQLite's native time
   type. `notify_pending_failures` / `notify_state` are how `internal/notify` persists
-  cross-tick state without its own storage.
+  cross-tick state without its own storage. Attachment bytes live in the
+  `email_attachments` side table, never in the `emails` row: every list query and
+  `ClaimDue` select `emailCols`, so a BLOB there would be dragged through the
+  admin email list and every worker tick. `emails.attachment_count` is the
+  denormalized counter that lets a caller detect attachments without touching the
+  BLOBs, and `EnqueueEmail` writes the email row and its attachment rows in one
+  transaction so `ClaimDue` can never claim a half-attached email.
 - **`internal/api`** — the public JSON API (`POST /api/v1/emails`, `GET /api/v1/emails/{id}`),
   bearer-token auth against `store.APIKey`. Validates everything it can up front (addresses,
   header values, from-domain match, domain verification) so a bad request never becomes a
@@ -73,7 +79,17 @@ struct fields, not interfaces/DI framework):
     `submissionTimeout` (sender.go) before changing either.
   - `classify.go`: SMTP 5xx (and "recipient domain doesn't exist" DNS errors) are permanent;
     everything else is temporary and retried.
-  - `message.go`: builds and DKIM-signs the RFC 5322 message.
+  - `message.go` / `attachments.go`: builds and DKIM-signs the RFC 5322 message.
+    The body is assembled as a MIME tree (`buildBody`) because attachments make
+    the structure conditional: `text/*` alone, or `multipart/alternative`, wrapped
+    in `multipart/related` when there are inline (cid:) parts, wrapped in
+    `multipart/mixed` when there are file attachments — that nesting order is what
+    makes both inline images and downloadable files render in mainstream clients.
+    An email with no attachments produces exactly the bytes it did before
+    attachments existed. `BuildMessage` refuses to build when
+    `AttachmentCount > 0` and no attachments are loaded, so a caller that skipped
+    `ListAttachments` gets a retryable error rather than a delivered email
+    silently missing its invoice.
 - **`internal/dkimkeys`** — DKIM keypair generation and DNS record text generation
   (`dkimkeys.Records`) shown in the admin UI.
 - **`internal/dnscheck`** — looks up SPF/DKIM/DMARC TXT records and compares against expected
@@ -112,4 +128,14 @@ SQLite DB with fake domains/keys/emails for taking admin UI screenshots.
   display name in `from_addr`/`to_addr` — those are the routing addresses.
 - Every `POST /api/v1/emails` validation happens before the domain/DKIM/queue lookups it's
   cheaper to fail fast on, and specifically before anything that would leave a permanently
-  unsendable email sitting in the queue.
+  unsendable email sitting in the queue. `internal/send` is the single ingress for both the
+  JSON API and the MCP server, so validation added there covers every surface at once —
+  including `delivery.ValidateAttachment`, which is deliberately the same check `BuildMessage`
+  runs.
+- Attachment bytes are loaded per delivery attempt (`worker.process` -> `ListAttachments`),
+  never carried in memory between attempts: `BuildMessage` runs on every attempt, so a retry
+  hours later — or in a different process — has to re-read them from the DB.
+- Attachment filenames, content types and content ids end up in MIME headers, so they get the
+  same CR/LF rejection as header values; non-ASCII filenames are RFC 2231-encoded by
+  `mime.FormatMediaType`. The `Content-Transfer-Encoding` / `Content-Disposition` /
+  `Content-ID` part headers are in `reservedHeaders` for the same reason `Content-Type` is.

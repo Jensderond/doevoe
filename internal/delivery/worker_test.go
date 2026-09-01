@@ -197,3 +197,85 @@ func TestExhaustedRetriesFail(t *testing.T) {
 		t.Fatal("OnPermanentFailure not called for exhausted email")
 	}
 }
+
+// TestTickLoadsAttachmentsEveryAttempt: attachment bytes are not part of the
+// claimed row, so the worker has to load them before each send. The retry half
+// is the point — BuildMessage runs per attempt, so a retry hours later (in a
+// different process, even) must still see the bytes, which only holds if they
+// are re-read from the DB rather than carried in memory.
+func TestTickLoadsAttachmentsEveryAttempt(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id, err := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: "temp@dest.test",
+		Subject: "s", BodyText: "b", Attachments: []store.Attachment{
+			{Filename: "invoice.pdf", ContentType: "application/pdf", Content: []byte("%PDF")},
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture what the sender was handed on each attempt, and build the message
+	// from it: a send that receives no attachments would build a message
+	// silently missing the invoice, which is exactly what must not happen.
+	var seen [][]store.Attachment
+	var buildErrs []error
+	send := func(_ context.Context, e *store.Email, _ *store.Domain) Result {
+		seen = append(seen, e.Attachments)
+		if _, err := BuildMessage(e, "mail.example.com", testTime); err != nil {
+			buildErrs = append(buildErrs, err)
+		}
+		return Result{Code: 451, Err: &smtp.SMTPError{Code: 451, Message: "later"}}
+	}
+	w := &Worker{Store: s, Send: send, BatchSize: 10, PerDomainLimit: 2}
+
+	// Two attempts, the second after the backoff has come due.
+	if err := w.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkRetry(id, store.Now(), "451 later"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(seen) != 2 {
+		t.Fatalf("sender called %d times, want 2", len(seen))
+	}
+	for i, atts := range seen {
+		if len(atts) != 1 {
+			t.Errorf("attempt %d: got %d attachments, want 1", i+1, len(atts))
+			continue
+		}
+		if string(atts[0].Content) != "%PDF" {
+			t.Errorf("attempt %d: content = %q, want %%PDF", i+1, atts[0].Content)
+		}
+	}
+	if len(buildErrs) != 0 {
+		t.Errorf("BuildMessage failed during delivery: %v", buildErrs)
+	}
+}
+
+// TestTickWithoutAttachmentsSkipsTheLoad: an email with no attachments must not
+// pay for a query it doesn't need, and must reach the sender with a nil slice.
+func TestTickWithoutAttachmentsSkipsTheLoad(t *testing.T) {
+	_, f, w, _ := workerFixture(t)
+	var withAttachments int
+	base := f.send
+	w.Send = func(ctx context.Context, e *store.Email, d *store.Domain) Result {
+		if e.AttachmentCount != 0 || e.Attachments != nil {
+			withAttachments++
+		}
+		return base(ctx, e, d)
+	}
+	if err := w.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if withAttachments != 0 {
+		t.Errorf("%d email(s) reached the sender with attachments they don't have", withAttachments)
+	}
+}

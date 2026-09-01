@@ -560,6 +560,29 @@ func retryable(status string) bool {
 
 func cancelable(status string) bool { return status == "queued" }
 
+// attachmentView is store.AttachmentMeta plus the size as the detail page
+// shows it. The admin templates are parsed without a FuncMap, so anything a
+// template can't express as a field access is formatted here in Go.
+type attachmentView struct {
+	store.AttachmentMeta
+	SizeText string
+}
+
+// humanSize renders a byte count the way the size of an attachment is
+// normally talked about — the point on the page is "is this the 4MB PDF I
+// meant to send", not the exact octet count. Binary units, since that's what
+// the byte limits in internal/send are expressed in.
+func humanSize(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
 func (a *Admin) showEmail(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	e, err := a.Store.GetEmail(id)
@@ -569,8 +592,23 @@ func (a *Admin) showEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	attempts, _ := a.Store.ListAttempts(id)
 	domain, _ := a.Store.GetDomain(e.DomainID)
+	// Metadata only, never the bytes: the page needs to show what is attached
+	// (a missing or unexpected attachment is exactly what you come here to
+	// check after a "message too large" bounce), and pulling megabytes of BLOB
+	// through to render a filename would be wasteful. There is deliberately no
+	// download route — serving caller-supplied bytes from the admin origin is
+	// new attack surface for a debugging convenience.
+	var attachments []attachmentView
+	if e.AttachmentCount > 0 {
+		metas, _ := a.Store.ListAttachmentMeta(id)
+		attachments = make([]attachmentView, len(metas))
+		for i, m := range metas {
+			attachments[i] = attachmentView{AttachmentMeta: m, SizeText: humanSize(m.Size)}
+		}
+	}
 	a.render(w, r, "email", map[string]any{"Email": e, "Attempts": attempts, "Domain": domain,
-		"CanRetry": retryable(e.Status), "CanCancel": cancelable(e.Status),
+		"Attachments": attachments,
+		"CanRetry":    retryable(e.Status), "CanCancel": cancelable(e.Status),
 		// The recipient input is pre-filled with the same "Name <addr>" form the
 		// outgoing To header uses, so an unchanged submit round-trips the display
 		// name instead of dropping it.

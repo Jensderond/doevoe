@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -129,6 +130,62 @@ func TestSendEmail(t *testing.T) {
 	e, err := st.GetEmail(int64(out["id"].(float64)))
 	if err != nil || e.FromName != "Sender" || e.APIKeyID != 0 {
 		t.Fatalf("stored email %+v err=%v", e, err)
+	}
+}
+
+func TestSendEmailWithAttachments(t *testing.T) {
+	_, st, cs := setup(t)
+	d, _ := st.CreateDomain("example.com", "mail1", "PEM")
+	st.SetDomainVerification(d.ID, true, true, true, store.Now())
+	out := callTool(t, cs, "send_email", map[string]any{
+		"from": "hi@example.com", "to": "you@other.com",
+		"subject": "hello", "html": `<img src="cid:logo">`,
+		"attachments": []map[string]any{
+			{"filename": "invoice.pdf", "content": base64.StdEncoding.EncodeToString([]byte("%PDF"))},
+			{"filename": "logo.png", "content": base64.StdEncoding.EncodeToString([]byte("\x89PNG")),
+				"disposition": "inline", "content_id": "logo"},
+		},
+	})
+	if out["status"] != "queued" {
+		t.Fatalf("got %v", out)
+	}
+	id := int64(out["id"].(float64))
+	atts, err := st.ListAttachments(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atts) != 2 {
+		t.Fatalf("got %d attachments, want 2", len(atts))
+	}
+	if atts[0].Filename != "invoice.pdf" || string(atts[0].Content) != "%PDF" {
+		t.Errorf("first attachment = %q / %q", atts[0].Filename, atts[0].Content)
+	}
+	// content_type is not supplied here: it must be guessed from the extension,
+	// since a model calling this tool usually only has a filename.
+	if atts[0].ContentType != "application/pdf" {
+		t.Errorf("guessed content type = %q, want application/pdf", atts[0].ContentType)
+	}
+	if atts[1].Disposition != "inline" || atts[1].ContentID != "logo" {
+		t.Errorf("inline attachment stored as %+v", atts[1])
+	}
+}
+
+// TestSendEmailRejectsBadAttachment: the MCP surface shares send.Send, so it
+// must reject what the JSON API rejects rather than queue an unsendable email.
+func TestSendEmailRejectsBadAttachment(t *testing.T) {
+	_, st, cs := setup(t)
+	d, _ := st.CreateDomain("example.com", "mail1", "PEM")
+	st.SetDomainVerification(d.ID, true, true, true, store.Now())
+	msg := callToolErr(t, cs, "send_email", map[string]any{
+		"from": "hi@example.com", "to": "you@other.com", "subject": "hello", "text": "body",
+		"attachments": []map[string]any{{"filename": "../../etc/passwd", "content": "eA=="}},
+	})
+	if msg == "" {
+		t.Fatal("expected error text")
+	}
+	emails, _ := st.ListEmails(store.EmailFilter{Limit: 10})
+	if len(emails) != 0 {
+		t.Errorf("rejected tool call queued %d email(s)", len(emails))
 	}
 }
 

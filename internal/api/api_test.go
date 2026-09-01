@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"doevoe/internal/send"
 	"doevoe/internal/store"
 )
 
@@ -329,7 +331,7 @@ func TestPostEmailReplyToJSONTag(t *testing.T) {
 // potentially exhausting memory) in full.
 func TestPostEmailOversizedBodyRejected(t *testing.T) {
 	f := setup(t, true)
-	huge := strings.Repeat("a", 11<<20) // 11MB, over the 10MB cap
+	huge := strings.Repeat("a", 33<<20) // 33MB, over the 32MB cap
 	body := `{"from":"info@example.com","to":"u@dest.test","subject":"Hi","text":"` + huge + `"}`
 	resp := f.post(t, body, f.token, "")
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
@@ -360,5 +362,101 @@ func TestPostEmailPreservesDisplayName(t *testing.T) {
 	}
 	if e.From != "website@example.com" || e.To != "u@dest.test" {
 		t.Errorf("routing addrs must be bare: from=%q to=%q", e.From, e.To)
+	}
+}
+
+// TestPostEmailWithAttachments walks the public wire format end to end: the
+// "attachments" array decodes, the bytes land in the side table, and the email
+// row carries the count the worker keys off.
+func TestPostEmailWithAttachments(t *testing.T) {
+	f := setup(t, true)
+	pdf := base64.StdEncoding.EncodeToString([]byte("%PDF-1.4 fake"))
+	png := base64.StdEncoding.EncodeToString([]byte("\x89PNG\r\n\x1a\n"))
+	body := fmt.Sprintf(`{"from":"info@example.com","to":"u@dest.test","subject":"Hi",
+		"html":"<img src=\"cid:logo\">","attachments":[
+		{"filename":"invoice.pdf","content_type":"application/pdf","content":%q},
+		{"filename":"logo.png","content_type":"image/png","content":%q,"disposition":"inline","content_id":"logo"}]}`,
+		pdf, png)
+	resp := f.post(t, body, f.token, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != 202 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d: %s", resp.StatusCode, b)
+	}
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	e, err := f.store.GetEmail(out.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.AttachmentCount != 2 {
+		t.Fatalf("AttachmentCount = %d, want 2", e.AttachmentCount)
+	}
+	atts, err := f.store.ListAttachments(out.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atts) != 2 {
+		t.Fatalf("got %d attachments, want 2", len(atts))
+	}
+	if atts[0].Filename != "invoice.pdf" || string(atts[0].Content) != "%PDF-1.4 fake" {
+		t.Errorf("first attachment = %q / %q", atts[0].Filename, atts[0].Content)
+	}
+	// The snake_case wire fields need explicit json tags to decode at all (see
+	// the comment on sendRequest), so assert the two that carry underscores.
+	if atts[1].Disposition != "inline" || atts[1].ContentID != "logo" {
+		t.Errorf("disposition/content_id did not decode: %+v", atts[1])
+	}
+	if atts[1].ContentType != "image/png" {
+		t.Errorf("content_type did not decode: %q", atts[1].ContentType)
+	}
+}
+
+func TestPostEmailRejectsBadAttachment(t *testing.T) {
+	for _, tc := range []struct {
+		name, attachment string
+		code             int
+	}{
+		{"header injection in filename", `{"filename":"a\r\nBcc: evil@example.com","content":"eA=="}`, 422},
+		{"path in filename", `{"filename":"../../etc/passwd","content":"eA=="}`, 422},
+		{"invalid base64", `{"filename":"a.txt","content":"!!!!"}`, 422},
+		{"missing content", `{"filename":"a.txt"}`, 422},
+		{"bad disposition", `{"filename":"a.txt","content":"eA==","disposition":"sneaky"}`, 422},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setup(t, true)
+			body := `{"from":"info@example.com","to":"u@dest.test","subject":"Hi","text":"yo",` +
+				`"attachments":[` + tc.attachment + `]}`
+			resp := f.post(t, body, f.token, "")
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.code {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status %d, want %d: %s", resp.StatusCode, tc.code, b)
+			}
+			// A rejected request must not queue anything: an email that can never
+			// be built would otherwise sit there failing its whole retry schedule.
+			emails, _ := f.store.ListEmails(store.EmailFilter{Limit: 10})
+			if len(emails) != 0 {
+				t.Errorf("rejected request queued %d email(s)", len(emails))
+			}
+		})
+	}
+}
+
+// TestPostEmailAttachmentTooLarge: the documented per-message ceiling is the
+// attachment limit in internal/send, not the request body cap, so a single
+// oversized attachment inside a well-formed body must say so with 413.
+func TestPostEmailAttachmentTooLarge(t *testing.T) {
+	f := setup(t, true)
+	oversized := base64.StdEncoding.EncodeToString(make([]byte, send.MaxAttachmentBytes+1))
+	body := fmt.Sprintf(`{"from":"info@example.com","to":"u@dest.test","subject":"Hi","text":"yo",
+		"attachments":[{"filename":"big.bin","content_type":"application/octet-stream","content":%q}]}`, oversized)
+	resp := f.post(t, body, f.token, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, want 413: %s", resp.StatusCode, b)
 	}
 }

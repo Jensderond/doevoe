@@ -19,7 +19,16 @@ type sendEmailInput struct {
 	Text           string            `json:"text,omitempty" jsonschema:"plain-text body; provide html and/or text"`
 	ReplyTo        string            `json:"reply_to,omitempty"`
 	Headers        map[string]string `json:"headers,omitempty" jsonschema:"extra headers; From/To/Subject/Date/Message-ID and other doevoe-set headers are rejected"`
+	Attachments    []attachmentInput `json:"attachments,omitempty" jsonschema:"files to attach; each carries its bytes base64-encoded"`
 	IdempotencyKey string            `json:"idempotency_key,omitempty" jsonschema:"dedupe key: repeating a call with the same key replays the original result instead of sending twice"`
+}
+
+type attachmentInput struct {
+	Filename    string `json:"filename" jsonschema:"file name shown to the recipient; must not contain a path separator"`
+	Content     string `json:"content" jsonschema:"the file's bytes, base64-encoded"`
+	ContentType string `json:"content_type,omitempty" jsonschema:"MIME type; guessed from the filename extension when omitted"`
+	Disposition string `json:"disposition,omitempty" jsonschema:"\"attachment\" (default) or \"inline\" for an image the HTML body references as cid:<content_id>"`
+	ContentID   string `json:"content_id,omitempty" jsonschema:"id an inline part is referenced by, without angle brackets; e.g. content_id \"logo\" is used as <img src=\"cid:logo\">"`
 }
 
 type sendEmailOutput struct {
@@ -77,9 +86,17 @@ func (s *Server) sendEmail(ctx context.Context, req *mcp.CallToolRequest, in sen
 	if d == nil {
 		return nil, sendEmailOutput{}, fmt.Errorf("domain %s is not registered in doevoe; create it with create_domain first", name)
 	}
+	attachments := make([]send.Attachment, len(in.Attachments))
+	for i, a := range in.Attachments {
+		attachments[i] = send.Attachment{
+			Filename: a.Filename, ContentType: a.ContentType, ContentBase64: a.Content,
+			Disposition: a.Disposition, ContentID: a.ContentID,
+		}
+	}
 	res, serr := send.Send(s.Store, 0, d.ID, send.Input{
 		From: in.From, To: in.To, Subject: in.Subject, HTML: in.HTML, Text: in.Text,
-		ReplyTo: in.ReplyTo, Headers: in.Headers, IdempotencyKey: in.IdempotencyKey,
+		ReplyTo: in.ReplyTo, Headers: in.Headers, Attachments: attachments,
+		IdempotencyKey: in.IdempotencyKey,
 	})
 	if serr != nil {
 		return nil, sendEmailOutput{}, serr

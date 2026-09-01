@@ -536,3 +536,54 @@ func TestRetryStatusGuard(t *testing.T) {
 		t.Fatalf("email should still be sent after failed retry attempt")
 	}
 }
+
+// TestEmailDetailShowsAttachments: after a "message too large" bounce, the
+// detail page is where you check what was actually attached, so it lists the
+// filename, type and size — and deliberately not a download link, which would
+// mean serving caller-supplied bytes from the admin origin.
+func TestEmailDetailShowsAttachments(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id, _ := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: "u@dest.test",
+		Subject: "s", BodyText: "b", Attachments: []store.Attachment{
+			{Filename: "invoice.pdf", ContentType: "application/pdf", Content: make([]byte, 2560)},
+			{Filename: "logo.png", ContentType: "image/png", Disposition: "inline", ContentID: "logo",
+				Content: make([]byte, 512)},
+		}})
+
+	resp, _ := c.Get(fmt.Sprintf("%s/admin/emails/%d", srv.URL, id))
+	body := readBody(t, resp)
+	for _, want := range []string{"Attachments", "invoice.pdf", "application/pdf", "2.5 KB",
+		"logo.png", "image/png", "512 B", "cid:logo"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detail missing %q", want)
+		}
+	}
+}
+
+// TestEmailDetailWithoutAttachments: the section is absent entirely rather than
+// rendering an empty heading, and no attachment query runs.
+func TestEmailDetailWithoutAttachments(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	d, _ := s.CreateDomain("example.com", "mail1", "PEM")
+	id, _ := s.EnqueueEmail(&store.Email{DomainID: d.ID, From: "a@example.com", To: "u@dest.test",
+		Subject: "s", BodyText: "b"})
+
+	resp, _ := c.Get(fmt.Sprintf("%s/admin/emails/%d", srv.URL, id))
+	if body := readBody(t, resp); strings.Contains(body, "Attachments") {
+		t.Error("Attachments section rendered for an email with none")
+	}
+}
+
+func TestHumanSize(t *testing.T) {
+	for _, tc := range []struct {
+		in   int64
+		want string
+	}{{0, "0 B"}, {512, "512 B"}, {1024, "1.0 KB"}, {2560, "2.5 KB"}, {1 << 20, "1.0 MB"}, {5<<20 + 512<<10, "5.5 MB"}} {
+		if got := humanSize(tc.in); got != tc.want {
+			t.Errorf("humanSize(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
