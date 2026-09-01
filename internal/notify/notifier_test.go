@@ -379,6 +379,98 @@ func TestMonthlyStatsHandlesMonthEndOverflow(t *testing.T) {
 	}
 }
 
+func TestMonthlyStatsHTMLBody(t *testing.T) {
+	s, n, clientID := fixture(t, true)
+	s.SetState("last_stats_sent", "2026-07")
+
+	// June: 1 sent, 1 failed. July: 2 sent, 1 failed — the failure carries
+	// HTML metacharacters, which must come out escaped in the HTML body
+	// (SMTP error text is remote-server-controlled).
+	emailInMonth(t, s, clientID, "2026-06", true)
+	emailInMonth(t, s, clientID, "2026-06", false)
+	emailInMonth(t, s, clientID, "2026-07", true)
+	emailInMonth(t, s, clientID, "2026-07", true)
+	id, err := s.EnqueueEmail(&store.Email{DomainID: clientID, From: "a@client.example",
+		To: "u@dest.test", Subject: "s", BodyText: "b", CreatedAt: "2026-07-15T12:00:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.MarkFailed(id, `550 <blocked> & "rejected"`)
+
+	if err := n.StatsTick(time.Date(2026, 8, 1, 0, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	got := systemEmails(t, s)
+	if len(got) != 1 {
+		t.Fatalf("want 1 stats email, got %d", len(got))
+	}
+	html := got[0].BodyHTML
+	if html == "" {
+		t.Fatal("stats email must carry an HTML alternative body")
+	}
+	for _, want := range []string{
+		"July 2026",       // month heading
+		"client.example",  // per-domain row
+		"66.7%",           // July delivery rate (2 sent, 1 failed)
+		"&#43;16.7pt",     // delta vs June's 50.0% (html/template escapes the +)
+		"sys.example",     // DNS verification section lists all domains
+		n.BaseURL + "/admin/",
+		"550 &lt;blocked&gt; &amp; &#34;rejected&#34;", // escaped failure reason
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("stats HTML missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "550 <blocked>") {
+		t.Error("failure reason rendered unescaped into HTML")
+	}
+	// The HTML body is written to the wire verbatim (no quoted-printable),
+	// so every line must stay under SMTP's 998-byte limit.
+	for i, line := range strings.Split(html, "\n") {
+		if len(line) > 900 {
+			t.Errorf("HTML line %d is %d bytes, too close to the 998-byte SMTP limit", i+1, len(line))
+		}
+	}
+}
+
+func TestMonthlyStatsHTMLQuietAndUnverified(t *testing.T) {
+	s, n, clientID := fixture(t, true)
+	s.SetState("last_stats_sent", "2026-07")
+	// Activity in June only: client.example must appear as "no activity",
+	// and being unverified it must show as blocked in the DNS section.
+	emailInMonth(t, s, clientID, "2026-06", true)
+
+	if err := n.StatsTick(time.Date(2026, 8, 1, 0, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	got := systemEmails(t, s)
+	if len(got) != 1 {
+		t.Fatalf("want 1 stats email, got %d", len(got))
+	}
+	html := got[0].BodyHTML
+	for _, want := range []string{
+		"no activity",
+		"1 sent, 0 failed (100.0% delivered)", // June counts in the prev column
+		"NOT VERIFIED",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("stats HTML missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestNonStatsNotificationsStayTextOnly(t *testing.T) {
+	s, n, _ := fixture(t, true)
+	n.KeyCreated("deploy", "client.example")
+	got := systemEmails(t, s)
+	if len(got) != 1 {
+		t.Fatalf("want 1 email, got %d", len(got))
+	}
+	if got[0].BodyHTML != "" {
+		t.Errorf("key-created notification should be text-only, got HTML: %q", got[0].BodyHTML)
+	}
+}
+
 func TestBlocklistNotifications(t *testing.T) {
 	s, n, _ := fixture(t, true)
 

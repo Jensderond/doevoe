@@ -48,6 +48,13 @@ func (n *Notifier) Run(ctx context.Context) {
 // enqueue sends a system notification through the normal queue.
 // Returns false (without error) when the system domain is missing or unverified — fail-safe skip.
 func (n *Notifier) enqueue(subject, body string) (bool, error) {
+	return n.enqueueRich(subject, body, "")
+}
+
+// enqueueRich is enqueue with an optional text/html alternative body; the
+// delivery pipeline turns a non-empty bodyHTML into multipart/alternative,
+// so plain-text remains the canonical content every notification carries.
+func (n *Notifier) enqueueRich(subject, bodyText, bodyHTML string) (bool, error) {
 	domainName := n.SystemFrom[strings.LastIndex(n.SystemFrom, "@")+1:]
 	d, err := n.Store.GetDomainByName(domainName)
 	if err != nil {
@@ -59,7 +66,7 @@ func (n *Notifier) enqueue(subject, body string) (bool, error) {
 	}
 	_, err = n.Store.EnqueueEmail(&store.Email{
 		DomainID: d.ID, From: n.SystemFrom, To: n.AdminEmail,
-		Subject: subject, BodyText: body, IsSystem: true,
+		Subject: subject, BodyText: bodyText, BodyHTML: bodyHTML, IsSystem: true,
 	})
 	return err == nil, err
 }
@@ -297,10 +304,15 @@ func (n *Notifier) StatsTick(now time.Time) error {
 		slog.Warn("notifier: list domains failed", "err", err)
 	}
 
+	// Text and HTML bodies are rendered from the same pass so they can never
+	// disagree; the plain-text body is the canonical one (it is what the
+	// tests pin down and what a text-only client shows).
+	html := statsHTMLData{Month: prev, MonthLabel: monthLabel(prev), BaseURL: n.BaseURL, Reasons: reasons}
 	var b strings.Builder
 	fmt.Fprintf(&b, "doevoe stats for %s\n\nPer domain:\n", prev)
 	for _, st := range stats {
 		fmt.Fprintf(&b, "- %s: %s%s\n", st.DomainName, fmtCounts(st), fmtComparison(st, prevByDomain))
+		html.Rows = append(html.Rows, statsHTMLRow(st, false, prevByDomain))
 		delete(prevByDomain, st.DomainName)
 	}
 	// Domains active last month but silent this month: going quiet should
@@ -310,6 +322,7 @@ func (n *Notifier) StatsTick(now time.Time) error {
 	for _, st := range prevStats {
 		if _, ok := prevByDomain[st.DomainName]; ok {
 			fmt.Fprintf(&b, "- %s: no activity — prev month: %s\n", st.DomainName, fmtCounts(st))
+			html.Rows = append(html.Rows, statsHTMLRow(store.DomainStats{DomainName: st.DomainName}, true, prevByDomain))
 		}
 	}
 	if len(stats) == 0 && len(prevByDomain) == 0 {
@@ -328,8 +341,9 @@ func (n *Notifier) StatsTick(now time.Time) error {
 			state = "NOT VERIFIED — sending blocked"
 		}
 		fmt.Fprintf(&b, "- %s: %s\n", d.Name, state)
+		html.DNS = append(html.DNS, dnsStatusRow{Name: d.Name, Verified: d.Verified()})
 	}
-	sent, err := n.enqueue("doevoe: monthly stats "+prev, b.String())
+	sent, err := n.enqueueRich("doevoe: monthly stats "+prev, b.String(), renderStatsHTML(html))
 	if err != nil || !sent {
 		return err // retry next tick; state unchanged
 	}
