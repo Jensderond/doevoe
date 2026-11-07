@@ -185,6 +185,76 @@ func TestSendSTARTTLSSuccess(t *testing.T) {
 	}
 }
 
+// heloCheckBackend mimics receivers (e.g. VodafoneZiggo) that reject an
+// EHLO name not matching the sending IP's DNS - including the pre-TLS EHLO.
+// It records every EHLO name it sees, both at session creation and at MAIL
+// time, so it also covers the post-STARTTLS EHLO.
+type heloCheckBackend struct {
+	testBackend
+	want  string
+	helos []string
+}
+
+type heloCheckSession struct {
+	testSession
+	b    *heloCheckBackend
+	conn *smtp.Conn
+}
+
+func (b *heloCheckBackend) NewSession(c *smtp.Conn) (smtp.Session, error) {
+	b.helos = append(b.helos, c.Hostname())
+	if c.Hostname() != b.want {
+		return nil, &smtp.SMTPError{Code: 421, Message: "Your HELO/EHLO " + c.Hostname() + " is not matching your DNS configuration"}
+	}
+	return &heloCheckSession{testSession{&b.testBackend}, b, c}, nil
+}
+
+func (s *heloCheckSession) Mail(from string, opts *smtp.MailOptions) error {
+	s.b.helos = append(s.b.helos, s.conn.Hostname())
+	return nil
+}
+
+// TestSendSTARTTLSNeverSendsLocalhostEHLO guards against go-smtp's
+// NewClientStartTLS default of "EHLO localhost" leaking onto the wire before
+// the STARTTLS upgrade; real receivers reject that with a 421.
+func TestSendSTARTTLSNeverSendsLocalhostEHLO(t *testing.T) {
+	cert := generateSelfSignedCert(t)
+	b := &heloCheckBackend{want: "mail.example.com"}
+	srv := smtp.NewServer(b)
+	srv.Domain = "test.local"
+	srv.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(l)
+	t.Cleanup(func() { srv.Close() })
+	_, p, _ := net.SplitHostPort(l.Addr().String())
+	port, _ := strconv.Atoi(p)
+
+	e, d := testEmailAndDomain(t, "ok@dest.test")
+	sender := testSender(port)
+	sender.TLSConfig = func(host string) *tls.Config {
+		return &tls.Config{ServerName: host, InsecureSkipVerify: true}
+	}
+
+	res := sender.Send(context.Background(), e, d)
+	if res.Err != nil {
+		t.Fatalf("send: %+v (EHLO names seen: %v)", res, b.helos)
+	}
+	if !res.TLS {
+		t.Error("want Result.TLS = true")
+	}
+	for _, h := range b.helos {
+		if h != "mail.example.com" {
+			t.Errorf("server saw EHLO %q, want only mail.example.com (all: %v)", h, b.helos)
+		}
+	}
+	if len(b.messages) != 1 {
+		t.Fatalf("server got %d messages, want 1", len(b.messages))
+	}
+}
+
 func TestSendSTARTTLSHandshakeFailureFallsBackToPlaintext(t *testing.T) {
 	cert := generateSelfSignedCert(t)
 	b := &testBackend{}
@@ -219,7 +289,7 @@ func TestSendSTARTTLSHandshakeFailureFallsBackToPlaintext(t *testing.T) {
 // expire mid-conversation (well after dial/EHLO, which are near-instant
 // against a local server) rather than at connect time. This is the same
 // mechanism (conn.SetDeadline in connect's dial closure) that bounds
-// smtp.NewClientStartTLS's internal handshake in the STARTTLS tests above;
+// startTLS's pre-TLS greet/EHLO/STARTTLS in the STARTTLS tests above;
 // TestSendSTARTTLSSuccess/TestSendSTARTTLSHandshakeFailureFallsBackToPlaintext
 // passing alongside this confirms the default 30m OverallTimeout doesn't
 // interfere with normal (fast) STARTTLS handshakes.

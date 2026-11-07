@@ -48,9 +48,9 @@ func (w *Worker) Run(ctx context.Context) {
 // Sender.OverallTimeout (30m by default, see NewSender/defaultOverallTimeout
 // in sender.go) wraps the entire Send call in a context deadline that is set
 // on every dialed conn immediately after dial, bounding ALL I/O on that
-// conn - including smtp.NewClientStartTLS's internal greet+EHLO+STARTTLS
-// handshake, which otherwise runs before commandTimeout/submissionTimeout
-// are ever assigned and would escape them. commandTimeout/submissionTimeout
+// conn - including the pre-TLS greet+EHLO+STARTTLS exchange (sender.go's
+// startTLS) and the TLS handshake, which happen before any *smtp.Client and
+// its commandTimeout/submissionTimeout exist. commandTimeout/submissionTimeout
 // remain in effect as an inner bound within that 30m envelope. 45m leaves
 // 15m of headroom above the 30m hard cap so a send that is merely slow
 // (e.g. a tarpitting MX) doesn't get requeued and re-sent by a second worker
