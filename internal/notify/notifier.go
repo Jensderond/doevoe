@@ -53,7 +53,7 @@ func (n *Notifier) enqueue(subject, body string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if d == nil || !d.Verified() {
+	if d == nil || !d.CanSend() {
 		slog.Warn("notification skipped: system domain not verified", "domain", domainName)
 		return false, nil
 	}
@@ -324,7 +324,9 @@ func (n *Notifier) StatsTick(now time.Time) error {
 	b.WriteString("\nDNS verification status:\n")
 	for _, d := range domains {
 		state := "OK"
-		if !d.Verified() {
+		if d.Relayed() {
+			state = "sends via email.eu (DNS managed there)"
+		} else if !d.Verified() {
 			state = "NOT VERIFIED — sending blocked"
 		}
 		fmt.Fprintf(&b, "- %s: %s\n", d.Name, state)

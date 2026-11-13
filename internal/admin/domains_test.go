@@ -108,3 +108,40 @@ func TestAPIKeyCreateShowsTokenOnce(t *testing.T) {
 		t.Fatal("token must not be shown on subsequent views")
 	}
 }
+
+func TestSetDomainProvider(t *testing.T) {
+	s, srv, c := adminFixture(t)
+	login(t, srv, c, "hunter2")
+	c.PostForm(srv.URL+"/admin/domains", url.Values{"name": {"client.example"}})
+
+	resp, _ := c.PostForm(srv.URL+"/admin/domains/1/provider", url.Values{"provider": {"emaileu"}, "api_key": {""}})
+	if resp.StatusCode != 422 {
+		t.Fatalf("provider without key: %d", resp.StatusCode)
+	}
+	resp, _ = c.PostForm(srv.URL+"/admin/domains/1/provider", url.Values{"provider": {"emaileu"}, "api_key": {"eu_supersecretkey1234"}})
+	if resp.StatusCode != 303 {
+		t.Fatalf("set provider: %d", resp.StatusCode)
+	}
+	d, _ := s.GetDomainByName("client.example")
+	if !d.Relayed() || d.ProviderAPIKey != "eu_supersecretkey1234" || !d.CanSend() {
+		t.Fatalf("domain row: %+v", d)
+	}
+
+	for _, path := range []string{"/admin/domains/1", "/admin/domains"} {
+		resp, _ = c.Get(srv.URL + path)
+		body := readBody(t, resp)
+		if !strings.Contains(body, "via email.eu") {
+			t.Errorf("%s: missing provider chip", path)
+		}
+		if strings.Contains(body, "eu_supersecretkey1234") {
+			t.Errorf("%s: page leaks the sending key", path)
+		}
+	}
+
+	// Switching back with the key field left empty keeps the key.
+	c.PostForm(srv.URL+"/admin/domains/1/provider", url.Values{"provider": {"direct"}})
+	d, _ = s.GetDomain(d.ID)
+	if d.Relayed() || d.ProviderAPIKey == "" || d.CanSend() {
+		t.Fatalf("after switching back: %+v", d)
+	}
+}

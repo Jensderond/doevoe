@@ -227,6 +227,36 @@ exits immediately with an error.
 | `DOEVOE_INBOUND_LISTEN` | no | `:25` | SMTP listen address for the built-in DMARC aggregate-report receiver; set to an empty value to disable it entirely |
 | `DOEVOE_MCP_TOKEN` | no | — (disabled) | Bearer token for the MCP server at `/mcp`; unset disables the endpoint entirely. Admin-level credential: MCP tools can create domains and API keys and send from any verified domain |
 
+## Sending through email.eu instead of directly
+
+By default doevoe delivers every email itself, straight to the recipient's
+mail server. Per domain, you can instead have doevoe hand its queued emails
+to [email.eu](https://email.eu/transactional-email)'s sending API, which then
+signs and delivers them from its own servers. Your apps keep calling doevoe's
+API exactly as before; the queue, retries, idempotency, attempt log, and
+failure notifications all stay the same. Only the last hop changes.
+
+To set it up, open the domain's page in the admin UI, choose **Through
+email.eu's sending API**, paste a sending key (`eu_…`) that is allowed to send
+from that domain, and save. Things to know:
+
+- **DNS is email.eu's, not doevoe's.** Add the SPF/DKIM records email.eu shows
+  you for the domain. doevoe's own records (and its Verify button) don't apply
+  to a domain in this mode, and sending isn't blocked on them — email.eu
+  verifies the domain itself and refuses the send if it isn't ready.
+- **"Sent" means accepted by email.eu**, not by the recipient's server. A
+  bounce after that is in email.eu's log, not doevoe's.
+- **A wrong, revoked or paused key (401/403) is retried, not failed.** The
+  emails stay queued on the normal schedule below while you fix the key. A
+  message email.eu rejects as invalid (422) fails immediately.
+- **Retries can't double-send**: each email goes out with a stable
+  `Idempotency-Key`, so an attempt whose answer was lost is recognised by
+  email.eu on the next try.
+- The key is stored in the SQLite database in the clear (like the DKIM
+  private keys) and is never shown again in the UI.
+- Switching back to direct delivery is the same dropdown; the direct path
+  then requires doevoe's own DNS records to be verified again.
+
 ## Delivery and retries
 
 Emails are delivered directly to the recipient's MX servers (with an

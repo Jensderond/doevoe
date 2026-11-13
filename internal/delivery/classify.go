@@ -22,6 +22,13 @@ func Classify(err error) Class {
 		}
 		return ClassTemp
 	}
+	var re *RelayError
+	if errors.As(err, &re) {
+		if re.Permanent() {
+			return ClassPerm
+		}
+		return ClassTemp
+	}
 	var de *net.DNSError
 	if errors.As(err, &de) && de.IsNotFound {
 		return ClassPerm // recipient domain doesn't exist: the typo case

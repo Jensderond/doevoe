@@ -61,7 +61,7 @@ func (s *Server) addDomainTools(srv *mcp.Server) {
 	}, s.createDomain)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "verify_domain",
-		Description: "Check a domain's SPF, DKIM, and DMARC DNS records against the expected values and persist the result. Sending is only allowed from fully verified domains.",
+		Description: "Check a domain's SPF, DKIM, and DMARC DNS records against the expected values and persist the result. Sending is only allowed from fully verified domains, unless the domain is set (in the admin UI) to deliver through email.eu.",
 		Annotations: &mcp.ToolAnnotations{
 			IdempotentHint: true,
 			OpenWorldHint:  boolPtr(false),

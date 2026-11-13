@@ -2,19 +2,46 @@
 <p class="back"><a href="/admin/domains">&larr; Domains</a></p>
 <div class="page-head">
   <h1>{{.Domain.Name}}</h1>
-  {{if .Domain.Verified}}<span class="chip sent">verified</span>
+  {{if .Domain.Relayed}}<span class="chip sent">via email.eu</span>
+  {{else if .Domain.Verified}}<span class="chip sent">verified</span>
   {{else}}<span class="chip failed">setup needed</span>{{end}}
 </div>
+
+<form method="post" action="/admin/domains/{{.Domain.ID}}/provider" class="card" hx-boost="false">
+  <label>Deliver mail for this domain
+    <select name="provider">
+      <option value="direct"{{if not .Domain.Relayed}} selected{{end}}>Directly from doevoe, to the recipient's mail server</option>
+      <option value="emaileu"{{if .Domain.Relayed}} selected{{end}}>Through email.eu's sending API</option>
+    </select>
+  </label>
+  <label>email.eu sending key
+    <input type="password" name="api_key" autocomplete="off"
+      placeholder="{{with .Domain.ProviderKeyHint}}saved ({{.}}) — leave empty to keep it{{else}}eu_…{{end}}">
+  </label>
+  <p class="lede">Either way doevoe queues every email, retries it, and logs each attempt.
+     With email.eu, the key must be allowed to send from <strong>{{.Domain.Name}}</strong>, and
+     an email shows as sent once email.eu has accepted it; bounces after that are in email.eu's log.</p>
+  <div class="actions"><button type="submit" class="primary">Save delivery</button></div>
+</form>
+
+{{if .Domain.Relayed}}
+<p class="lede">This domain sends through email.eu, so its SPF and DKIM records are the ones email.eu
+   shows you, not the ones below. The records below are only needed if you switch back to
+   direct delivery.</p>
+{{else}}
 <p class="lede">Add these DNS records for <strong>{{.Domain.Name}}</strong>, then press Verify.
    Sending is blocked until all three are verified.</p>
+{{end}}
 
 {{range .Records}}
 <div class="card">
   <div class="row-top">
     <span class="domain-name">{{.Type}}</span>
+    {{if not $.Domain.Relayed}}
     {{if eq .Type "TXT (SPF)"}}{{if $.Domain.SPFVerified}}<span class="chip sent">verified</span>{{else}}<span class="chip failed">not found</span>{{end}}{{end}}
     {{if eq .Type "TXT (DKIM)"}}{{if $.Domain.DKIMVerified}}<span class="chip sent">verified</span>{{else}}<span class="chip failed">not found</span>{{end}}{{end}}
     {{if eq .Type "TXT (DMARC)"}}{{if $.Domain.DMARCVerified}}<span class="chip sent">verified</span>{{else}}<span class="chip failed">not found</span>{{end}}{{end}}
+    {{end}}
   </div>
   <div class="row-meta"><span>Host: <code>{{.Host}}</code></span></div>
   {{with .Value}}<div class="dns-record">{{.}}</div>{{end}}
@@ -23,7 +50,7 @@
 {{end}}
 
 <form method="post" action="/admin/domains/{{.Domain.ID}}/verify" class="actions" hx-boost="false">
-  <button type="submit" class="primary">Verify DNS records</button>
+  <button type="submit"{{if not .Domain.Relayed}} class="primary"{{end}}>Verify DNS records</button>
 </form>
 {{with .Domain.LastCheckedAt}}<p class="row-meta">Last checked: {{.}}</p>{{end}}
 {{end}}

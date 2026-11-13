@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 doevoe is a self-hosted transactional email API: a single Go binary that queues, DKIM-signs,
-and delivers mail directly to recipient MX servers (no third-party ESP, no smarthost), with a
+and delivers mail directly to recipient MX servers (or, per domain, hands it to email.eu's
+sending API as the last hop), with a
 JSON send/status API and a server-rendered admin UI for domain/DKIM setup, API keys, and
 delivery logs. Embedded SQLite is the only datastore.
 
@@ -79,6 +80,13 @@ struct fields, not interfaces/DI framework):
     `submissionTimeout` (sender.go) before changing either.
   - `classify.go`: SMTP 5xx (and "recipient domain doesn't exist" DNS errors) are permanent;
     everything else is temporary and retried.
+  - `relay.go`: the alternative last hop. A domain's `provider` column (`store.ProviderDirect`
+    / `store.ProviderEmailEU`, set on the admin domain page) picks, via `delivery.Route` in
+    `main.go`, between `Sender.Send` and `EmailEU.Send`, which POSTs the email's fields to
+    email.eu's API (no MIME build, no DKIM — the provider does both). Read the comments on
+    `RelayError.Permanent` (401/403 are deliberately temporary: a key problem must not fail
+    queued mail), the `Idempotency-Key` (what makes a retry after a lost response safe), and
+    `relayTimeout` (same stale-`sending` constraint as the direct sender) before changing them.
   - `message.go` / `attachments.go`: builds and DKIM-signs the RFC 5322 message.
     The body is assembled as a MIME tree (`buildBody`) because attachments make
     the structure conditional: `text/*` alone, or `multipart/alternative`, wrapped
@@ -117,6 +125,10 @@ SQLite DB with fake domains/keys/emails for taking admin UI screenshots.
   /`main.go`/`admin.go`, the idempotency race in `api.go`). Read the existing comment before
   changing a related constant or control-flow branch — they usually explain a non-obvious
   reason a value is what it is.
+- The send gate is `Domain.CanSend()`, not `Domain.Verified()`: a relayed domain's SPF/DKIM
+  belong to the provider, so doevoe's DNS check can never pass for it and it is gated on a
+  configured provider key instead. `Verified()` still means "doevoe's own records are in
+  place" and is what the blacklist checks and the DMARC own-failure alert key on.
 - Fail-closed vs fail-open is deliberate per case: sending is fail-closed on unverified domains
   (403) and on indeterminate DNS checks (skip persisting, keep prior state); notifications are
   fail-open/fail-safe (skip silently if the system domain isn't verified, never blocking the
