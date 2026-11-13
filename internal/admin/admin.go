@@ -78,6 +78,7 @@ func (a *Admin) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /admin/domains", a.auth(a.createDomain))
 	mux.Handle("GET /admin/domains/{id}", a.auth(a.showDomain))
 	mux.Handle("POST /admin/domains/{id}/verify", a.auth(a.verifyDomain))
+	mux.Handle("POST /admin/domains/{id}/provider", a.auth(a.setDomainProvider))
 	mux.Handle("GET /admin/keys", a.auth(a.listKeys))
 	mux.Handle("POST /admin/keys", a.auth(a.createKey))
 	mux.Handle("POST /admin/keys/{id}/revoke", a.auth(a.revokeKey))
@@ -729,6 +730,31 @@ func (a *Admin) verifyDomain(w http.ResponseWriter, r *http.Request) {
 	// transient resolver failure); the admin page redirects back regardless
 	// of outcome, matching prior behavior.
 	domains.Verify(r.Context(), a.Store, a.CheckDomain, d)
+	http.Redirect(w, r, fmt.Sprintf("/admin/domains/%d", d.ID), http.StatusSeeOther)
+}
+
+// setDomainProvider switches a domain between direct delivery and a provider's
+// API. The key field is write-only: the page never renders the stored key, and
+// leaving the field empty keeps it (see domains.SetProvider).
+func (a *Admin) setDomainProvider(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	d, err := a.Store.GetDomain(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	err = domains.SetProvider(a.Store, d, r.FormValue("provider"), r.FormValue("api_key"))
+	switch {
+	case errors.Is(err, domains.ErrInvalidProvider):
+		http.Error(w, "unknown delivery provider", 422)
+		return
+	case errors.Is(err, domains.ErrProviderKey):
+		http.Error(w, "a valid email.eu sending key is required to send via email.eu", 422)
+		return
+	case err != nil:
+		http.Error(w, err.Error(), 500)
+		return
+	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/domains/%d", d.ID), http.StatusSeeOther)
 }
 

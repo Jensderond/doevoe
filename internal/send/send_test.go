@@ -124,3 +124,19 @@ func TestSendIdempotentReplay(t *testing.T) {
 		t.Fatalf("want replay of %d, got %+v", first.ID, second)
 	}
 }
+
+// A domain relayed through a provider can't pass doevoe's own DNS check (its
+// SPF/DKIM are the provider's), so it is gated on a configured key instead.
+func TestSendRelayedDomainNeedsKeyNotVerification(t *testing.T) {
+	s, d, k := setup(t, false)
+	in := Input{From: "a@example.com", To: "b@dest.test", Subject: "s", Text: "b"}
+
+	s.SetDomainProvider(d.ID, store.ProviderEmailEU, "")
+	if _, err := Send(s, k.ID, d.ID, in); err == nil || err.Code != 403 {
+		t.Fatalf("relayed without key: %+v", err)
+	}
+	s.SetDomainProvider(d.ID, store.ProviderEmailEU, "eu_secret")
+	if res, err := Send(s, k.ID, d.ID, in); err != nil || res.Status != "queued" {
+		t.Fatalf("relayed with key: %+v %+v", res, err)
+	}
+}

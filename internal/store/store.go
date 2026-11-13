@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS domains (
   dkim_verified INTEGER NOT NULL DEFAULT 0,
   dmarc_verified INTEGER NOT NULL DEFAULT 0,
   last_checked_at TEXT NOT NULL DEFAULT '',
+  provider TEXT NOT NULL DEFAULT 'direct',
+  provider_api_key TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS api_keys (
@@ -169,6 +171,8 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE emails ADD COLUMN from_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE emails ADD COLUMN to_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE emails ADD COLUMN attachment_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE domains ADD COLUMN provider TEXT NOT NULL DEFAULT 'direct'`,
+		`ALTER TABLE domains ADD COLUMN provider_api_key TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {

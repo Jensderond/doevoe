@@ -52,7 +52,11 @@ func main() {
 		BaseURL: baseURL, Threshold: cfg.FailureRateThreshold, MinVolume: cfg.FailureRateMinVolume,
 	}
 	sender := delivery.NewSender(cfg.Hostname, cfg.SMTPPort)
-	worker := &delivery.Worker{Store: s, Send: sender.Send, OnPermanentFailure: notifier.PermanentFailure}
+	// Route picks the last hop per domain: direct-to-MX, or email.eu's API for
+	// domains set to it in the admin UI. Everything upstream (queue, retries,
+	// attempt log, failure notifications) is shared.
+	send := delivery.Route(sender.Send, delivery.NewEmailEU().Send)
+	worker := &delivery.Worker{Store: s, Send: send, OnPermanentFailure: notifier.PermanentFailure}
 
 	checkDomain := func(ctx context.Context, d *store.Domain) dnscheck.Result {
 		pub, err := dkimkeys.PublicB64FromPrivatePEM(d.DKIMPrivateKey)

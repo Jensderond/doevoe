@@ -129,7 +129,9 @@ func Send(st *store.Store, apiKeyID, domainID int64, in Input) (Result, *Error) 
 	if !strings.EqualFold(fromDomain, domain.Name) {
 		return Result{}, &Error{422, "from address must be on domain " + domain.Name}
 	}
-	if !domain.Verified() {
+	// CanSend, not Verified: a domain relayed through a provider is gated on
+	// having a key configured, since doevoe's own DNS check can't pass for it.
+	if !domain.CanSend() {
 		return Result{}, &Error{403, "domain " + domain.Name + " is not verified; complete DNS setup in the doevoe admin before sending"}
 	}
 

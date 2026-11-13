@@ -11,13 +11,13 @@
 <a class="row" href="/admin/domains/{{.ID}}">
   <div class="row-top">
     <span class="domain-name">{{.Name}}</span>
-    {{if .Verified}}<span class="chip sent">verified</span>{{else}}<span class="chip failed">setup needed</span>{{end}}
+    {{if .Relayed}}<span class="chip sent">via email.eu</span>{{else if .Verified}}<span class="chip sent">verified</span>{{else}}<span class="chip failed">setup needed</span>{{end}}
   </div>
-  <div class="checks">
+  {{if not .Relayed}}<div class="checks">
     <span class="{{if .SPFVerified}}ok{{else}}error{{end}}">SPF {{if .SPFVerified}}&#10003;{{else}}&#10007;{{end}}</span>
     <span class="{{if .DKIMVerified}}ok{{else}}error{{end}}">DKIM {{if .DKIMVerified}}&#10003;{{else}}&#10007;{{end}}</span>
     <span class="{{if .DMARCVerified}}ok{{else}}error{{end}}">DMARC {{if .DMARCVerified}}&#10003;{{else}}&#10007;{{end}}</span>
-  </div>
+  </div>{{end}}
 </a>
 {{end}}
 </div>

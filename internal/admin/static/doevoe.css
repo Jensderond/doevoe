@@ -207,6 +207,7 @@ button.danger:hover { border-color: var(--red); background: color-mix(in srgb, v
 :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .9rem; }
 form.card label + label, form.card label + input { margin-top: .8rem; }
+form.card label + .lede { margin: .8rem 0 0; }
 .error { color: var(--red); }
 .ok { color: var(--green); }
 

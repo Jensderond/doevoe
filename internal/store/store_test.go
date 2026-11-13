@@ -38,6 +38,13 @@ func TestMigrateAddsDisplayNameColumnsIdempotently(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE emails (id INTEGER PRIMARY KEY, from_addr TEXT NOT NULL DEFAULT '')`); err != nil {
 		t.Fatal(err)
 	}
+	// ...and a pre-provider domains table, which migrate also has to extend.
+	if _, err := db.Exec(`CREATE TABLE domains (id INTEGER PRIMARY KEY, name TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO domains (name) VALUES ('old.example')`); err != nil {
+		t.Fatal(err)
+	}
 	// First run adds the columns; second must tolerate "duplicate column name".
 	for i := 1; i <= 2; i++ {
 		if err := migrate(db); err != nil {
@@ -49,5 +56,14 @@ func TestMigrateAddsDisplayNameColumnsIdempotently(t *testing.T) {
 		if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('emails') WHERE name=?`, col).Scan(&n); err != nil || n != 1 {
 			t.Fatalf("column %s missing after migrate (n=%d err=%v)", col, n, err)
 		}
+	}
+	// A domain that predates the provider column must come out as direct:
+	// an upgrade may never silently reroute existing mail.
+	var provider, key string
+	if err := db.QueryRow(`SELECT provider, provider_api_key FROM domains WHERE name='old.example'`).Scan(&provider, &key); err != nil {
+		t.Fatal(err)
+	}
+	if provider != ProviderDirect || key != "" {
+		t.Fatalf("migrated domain: provider=%q key=%q, want direct with no key", provider, key)
 	}
 }
